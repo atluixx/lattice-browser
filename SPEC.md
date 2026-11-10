@@ -144,3 +144,9 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   rebuild (all cores, ~10 min) on a 7.4GB machine already under memory
   pressure while the user is active. Build + in-window playing-video
   verification is queued for an idle session.
+
+## Video: media backend compiles (Nov 10)
+- `cargo check -p lattice-embed --features lattice-embed/media` passes
+  against system GStreamer 1.26.11 (dev inputs: gst_all_1 gstreamer, base,
+  good, bad, ugly). Remaining: link spike with media, run YouTube, and
+  confirm the player shows frames instead of the fallback.
