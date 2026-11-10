@@ -60,8 +60,21 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 7. Video element shows "Your browser can't play this video" — no media
    backend in spike config (software GL context, dummy media). HW decode
    (spec choice A) is M1 work, not M0.
-8. WhatsApp Web: pending (QR login needs interaction; spike asserts landing
-   render + no crash).
+8. WhatsApp Web boots to its loading screen (logo, progress bar,
+   "End-to-end encrypted", 801 frames, no crash). Full QR/login flow needs
+   interaction + persistent storage — M1 scope. The compat risk that
+   mattered (large JS bundle, SW/IDB usage crashing or failing to boot)
+   is retired.
+9. Memory, first datum (debug build, software rendering, single page):
+   YouTube watch page peaks at **583MB RSS** vs Firefox 903MB for the full
+   2-site session (release build) on the same machine. Debug overstates
+   Lattice RSS; release + second tab still to measure. Target (<1.4GB for
+   both sites) looks reachable but unproven.
+10. Harness lesson: the teardown segfault discards block-buffered stdout —
+    run the spike under `stdbuf -o0 -e0` and judge by output, never by exit
+    code. `bench.sh` wraps runs with external GNU `time -v`
+    (`command time`, not the bash keyword; `/usr/bin/time` is absent on
+    NixOS).
 
 ## Provisional measurable targets (to be validated, not assumed)
 
