@@ -40,8 +40,14 @@ fn main() {
             // Atomic handoff: the shell polls this path, so never expose a
             // half-written PNG (kill -9 mid-save under rapid navigation).
             let part = format!("{out_png}.part");
-            match img.save(&part).and_then(|()| std::fs::rename(&part, &out_png)) {
-                Ok(()) => (true, dims),
+            match img.save(&part) {
+                Ok(()) => match std::fs::rename(&part, &out_png) {
+                    Ok(()) => (true, dims),
+                    Err(e) => {
+                        eprintln!("png rename failed: {e}");
+                        (false, dims)
+                    }
+                },
                 Err(e) => {
                     eprintln!("png save failed: {e}");
                     (false, dims)
