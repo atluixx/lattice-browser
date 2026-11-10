@@ -44,7 +44,7 @@ fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
         .spawn()
         .expect("spawn driver");
     let (tx, rx) = channel();
-    if let Some(stdout) = child.take_stdout() {
+    if let Some(stdout) = child.stdout.take() {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.starts_with("title=") {
