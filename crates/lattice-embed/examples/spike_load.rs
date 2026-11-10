@@ -38,6 +38,7 @@ impl EventLoopWaker for Waker {
 
 struct Delegate {
     title: RefCell<Option<String>>,
+    status_text: RefCell<Option<String>>,
     status: Cell<LoadStatus>,
     frames: Cell<u32>,
 }
@@ -46,6 +47,7 @@ impl Delegate {
     fn new() -> Rc<Self> {
         Rc::new(Self {
             title: RefCell::new(None),
+            status_text: RefCell::new(None),
             status: Cell::new(LoadStatus::Started),
             frames: Cell::new(0),
         })
@@ -55,6 +57,10 @@ impl Delegate {
 impl WebViewDelegate for Delegate {
     fn notify_page_title_changed(&self, _webview: WebView, title: Option<String>) {
         *self.title.borrow_mut() = title;
+    }
+
+    fn notify_status_text_changed(&self, _webview: WebView, status: Option<String>) {
+        *self.status_text.borrow_mut() = status;
     }
 
     fn notify_load_status_changed(&self, _webview: WebView, status: LoadStatus) {
@@ -88,6 +94,7 @@ fn main() {
     let servo = ServoBuilder::default()
         .event_loop_waker(Box::new(Waker { tx }))
         .build();
+    servo.setup_logging();
 
     let context: Rc<dyn RenderingContext> = Rc::new(
         SoftwareRenderingContext::new(PhysicalSize::new(WIDTH, HEIGHT))
@@ -190,6 +197,7 @@ fn main() {
 
     println!("url={url_str}");
     println!("title={:?}", delegate.title.borrow());
+    println!("status_text={:?}", delegate.status_text.borrow());
     println!("status={:?}", delegate.status.get());
     println!("frames={}", delegate.frames.get());
     println!("nonwhite_sample10={best_nonwhite}");

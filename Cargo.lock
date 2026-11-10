@@ -4898,8 +4898,13 @@ dependencies = [
 name = "lattice-embed"
 version = "0.0.1"
 dependencies = [
+ "dpi",
+ "image",
+ "rustls",
  "servo",
  "tracing",
+ "url",
+ "webrender_api",
 ]
 
 [[package]]
