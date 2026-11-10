@@ -173,3 +173,17 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   good+ugly+libav plugin paths plus GST_DEBUG capture.
 - YouTube additionally needs MSE (no MediaSource bindings in 0.1.4),
   independent of backend health.
+
+## Video: DECODES (Nov 10, mp4i run)
+- Progressive MP4 renders real decoded frames in-window path (flower.mp4:
+  photo pixels + native controls, no player errors). Backend proven
+  end-to-end: qtdemux + H.264 decode + Servo software compositor +
+  readback PNG.
+- Environment that works: `GST_PLUGIN_PATH` = union of nix store plugin
+  dirs (good, bad, base, ugly, libav 1.26.11) *alongside* the system
+  install — do NOT replace `GST_PLUGIN_SYSTEM_PATH` (breaks the foreign
+  /usr/lib install's registry and yields zero plugins). Plus patchelf
+  RPATH on the driver for gst/glib lib dirs.
+- Still open: audio output unverified, hardware decode untouched,
+  YouTube needs MSE (no MediaSource bindings in Servo 0.1.4 — separate,
+  larger gap), in-window video screenshot pending an idle session.
