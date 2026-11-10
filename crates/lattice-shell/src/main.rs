@@ -457,6 +457,15 @@ impl Render for RootView {
                 cx.notify();
             }))
             .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _, cx| {
+                eprintln!(
+                    "UI key: key={:?} char={:?} mods=c{} s{} a{} p{}",
+                    ev.keystroke.key,
+                    ev.keystroke.key_char,
+                    ev.keystroke.modifiers.control,
+                    ev.keystroke.modifiers.shift,
+                    ev.keystroke.modifiers.alt,
+                    ev.keystroke.modifiers.platform
+                );
                 let ks = &ev.keystroke;
                 if ks.modifiers.control || ks.modifiers.platform {
                     return;
