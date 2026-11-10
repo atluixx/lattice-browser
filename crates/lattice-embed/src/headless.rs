@@ -211,7 +211,7 @@ impl HeadlessPage {
         let start = Instant::now();
         let save_best = |img: &image::RgbaImage| {
             if let Some(path) = save_path {
-                let part = path.with_extension("part.png");
+                let part = std::path::PathBuf::from(format!("{}.part", path.display()));
                 match img.save(&part) {
                     Ok(()) => match std::fs::rename(&part, path) {
                         Ok(()) => eprintln!("spike progress: saved frame {}x{}", img.width(), img.height()),
