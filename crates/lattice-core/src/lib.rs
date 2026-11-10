@@ -1,5 +1,6 @@
 //! Lattice core: tabs, navigation, policy, session (M0 stubs).
 
+pub mod history;
 pub mod permissions;
 pub mod policy;
 pub mod session;

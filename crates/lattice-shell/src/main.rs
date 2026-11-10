@@ -1,11 +1,12 @@
-//! Lattice v0.3 testable browser (two-process).
+//! Lattice v0.4: tabs, persisted history/session, SIGSTOP'd background tabs.
 //!
-//! GPUI window: toolbar (Back/Forward/Reload/bookmarks), clickable address
-//! bar with keyboard editing (Enter commits, Esc cancels), status line,
-//! page view. The Servo driver runs as a child process per navigation and
-//! writes PNGs; this process polls for titles on its stdout and for PNG
-//! updates. Kill-and-respawn stands in for tab lifecycle until the
-//! single-binary link issue is resolved.
+//! GPUI window: tab strip, toolbar (Back/Forward/Reload/bookmarks),
+//! clickable address bar with keyboard editing, status line, page view.
+//! Each tab owns a Servo driver child process rendering PNGs to its own
+//! file. Background tabs are SIGSTOP'd (zero CPU, swapped out) and
+//! SIGCONT'd on switch — the honest version of background throttling.
+//! Session (open tabs + active) and visit history persist as JSON under
+//! ~/.local/share/lattice/.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -14,6 +15,8 @@ use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use gpui::*;
+use lattice_core::history::{HistoryLog, data_file};
+use lattice_core::session::{Session, SessionTab};
 
 fn driver_binary() -> String {
     std::env::var("LATTICE_DRIVER")
@@ -27,25 +30,31 @@ fn chrome_ua() -> String {
     })
 }
 
-fn page_png() -> PathBuf {
-    std::env::temp_dir().join("lattice-page.png")
+fn tab_png(id: u64) -> PathBuf {
+    std::env::temp_dir().join(format!("lattice-page-{id}.png"))
 }
 
-/// Spawn the driver for `url`. Returns the child, a title-line receiver,
-/// and the PNG path it renders to.
-fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
-    let out_png = page_png();
-    let _ = std::fs::remove_file(&out_png);
-    let err_log = std::fs::OpenOptions::new()
+fn frame_png(id: u64, nav: u64) -> PathBuf {
+    std::env::temp_dir().join(format!("lattice-frame-{id}-{nav}.png"))
+}
+
+/// Spawn the Servo driver for `url`, rendering to `out_png`.
+/// Returns the child and a title-line receiver.
+fn spawn_driver(url: &str, out_png: &PathBuf) -> (Child, Receiver<String>) {
+    let _ = std::fs::remove_file(out_png);
+    let err_stdio = match std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open("/tmp/opencode/lattice-driver-stderr.log")
-        .ok();
+    {
+        Ok(f) => Stdio::from(f),
+        Err(_) => Stdio::null(),
+    };
     let mut child = Command::new(driver_binary())
         .args([url, &"60".to_string(), &out_png.display().to_string()])
         .env("LATTICE_UA", chrome_ua())
         .stdout(Stdio::piped())
-        .stderr(err_log.map_or(Stdio::null(), Stdio::from))
+        .stderr(err_stdio)
         .spawn()
         .expect("spawn driver");
     let (tx, rx) = channel();
@@ -58,7 +67,21 @@ fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
             }
         });
     }
-    (child, rx, out_png)
+    (child, rx)
+}
+
+fn stop_child(child: &Child) {
+    // SIGSTOP the whole driver tree state: zero CPU, pageable out.
+    // Best effort; the Child handle keeps it reaped later via wait().
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGSTOP);
+    }
+}
+
+fn cont_child(child: &Child) {
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGCONT);
+    }
 }
 
 fn normalize_url(raw: &str) -> Option<String> {
@@ -73,98 +96,180 @@ fn normalize_url(raw: &str) -> Option<String> {
     }
 }
 
-struct RootView {
+fn short_title(url: &str, title: &Option<String>) -> String {
+    if let Some(t) = title {
+        let t: String = t.chars().take(24).collect();
+        if !t.is_empty() {
+            return t;
+        }
+    }
+    let mut s = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    if let Some(end) = s.find('/') {
+        s = &s[..end];
+    }
+    s.chars().take(24).collect()
+}
+
+struct Tab {
+    id: u64,
     history: Vec<String>,
     index: usize,
+    title: Option<String>,
     status: String,
     frame: Option<PathBuf>,
     driver: Option<Child>,
     title_rx: Option<Receiver<String>>,
     png: PathBuf,
-    png_gen: u64,
     nav_id: u64,
     last_mtime: Option<std::time::SystemTime>,
     addr: String,
     editing: bool,
+}
+
+struct RootView {
+    tabs: Vec<Tab>,
+    active: usize,
+    next_id: u64,
     addr_focus: FocusHandle,
+    history_log: HistoryLog,
 }
 
 impl RootView {
-    fn new(start_url: String, cx: &mut Context<Self>) -> Self {
-        let addr_focus = cx.focus_handle();
-        let mut view = Self {
-            history: Vec::new(),
+    fn session_path() -> PathBuf {
+        data_file("session.json")
+    }
+
+    fn save_session(&self) {
+        let tabs = self
+            .tabs
+            .iter()
+            .map(|t| SessionTab {
+                url: t.history[t.index].clone(),
+                title: t.title.clone().unwrap_or_default(),
+            })
+            .collect();
+        let session = Session {
+            tabs,
+            active: self.active,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&session) {
+            let _ = std::fs::write(Self::session_path(), json);
+        }
+        self.history_log.save(&data_file("history.json"));
+    }
+
+    fn new_tab(&mut self, url: String) -> usize {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.tabs.push(Tab {
+            history: vec![url.clone()],
             index: 0,
-            status: "starting…".to_string(),
+            title: None,
+            status: format!("loading {url} …"),
             frame: None,
             driver: None,
             title_rx: None,
-            png: page_png(),
-            png_gen: 0,
+            png: tab_png(id),
             nav_id: 0,
             last_mtime: None,
-            addr: start_url.clone(),
+            addr: url.clone(),
             editing: false,
-            addr_focus,
-        };
-        view.navigate(&start_url);
-        let task = cx.spawn(async move |view, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(200))
-                .await;
-            let cont = view
-                .update(cx, |view, cx| view.poll(cx))
-                .unwrap_or(false);
-            if !cont {
-                break;
-            }
+            id,
         });
-        task.detach();
-        view
+        self.tabs.len() - 1
     }
 
-    fn navigate(&mut self, url: &str) {
-        if let Some(mut child) = self.driver.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+    fn navigate(&mut self, tab: usize, url: &str) {
+        if self.tabs[tab].history.get(self.tabs[tab].index).map(|s| s.as_str()) != Some(url) {
+            let idx = self.tabs[tab].index;
+            self.tabs[tab].history.truncate(idx + 1);
+            self.tabs[tab].history.push(url.to_string());
+            self.tabs[tab].index = self.tabs[tab].history.len() - 1;
         }
-        if self.history.get(self.index).map(|s| s.as_str()) != Some(url) {
-            self.history.truncate(self.index + 1);
-            self.history.push(url.to_string());
-            self.index = self.history.len() - 1;
+        {
+            let t = &mut self.tabs[tab];
+            if let Some(mut child) = t.driver.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            t.frame = None;
+            t.title = None;
+            t.status = format!("loading {url} …");
+            t.addr = url.to_string();
+            t.editing = false;
+            t.last_mtime = None;
+            t.nav_id += 1;
+            let _ = std::fs::remove_file(frame_png(t.id, t.nav_id));
+            let (child, title_rx) = spawn_driver(url, &t.png.clone());
+            t.driver = Some(child);
+            t.title_rx = Some(title_rx);
         }
-        self.frame = None;
-        self.status = format!("loading {url} …");
-        self.addr = url.to_string();
-        self.editing = false;
-        self.last_mtime = None;
-        self.nav_id += 1;
-        // Drop the previous navigation's frame file so a torn copy can never
-        // resurface as stale content.
-        let _ = std::fs::remove_file(
-            std::env::temp_dir().join(format!("lattice-frame-{}.png", self.nav_id)),
-        );
-        let (child, title_rx, png) = spawn_driver(url);
-        self.driver = Some(child);
-        self.title_rx = Some(title_rx);
-        self.png = png;
+        self.history_log.push(url);
+        self.save_session();
     }
 
     fn go_offset(&mut self, delta: isize) {
-        let next = self.index as isize + delta;
-        if next >= 0 && (next as usize) < self.history.len() {
-            self.index = next as usize;
-            let url = self.history[self.index].clone();
-            self.navigate(&url);
+        let tab = self.active;
+        let next = self.tabs[tab].index as isize + delta;
+        if next >= 0 && (next as usize) < self.tabs[tab].history.len() {
+            self.tabs[tab].index = next as usize;
+            let url = self.tabs[tab].history[self.tabs[tab].index].clone();
+            self.navigate(tab, &url);
         }
     }
 
+    fn switch_tab(&mut self, idx: usize) {
+        if idx == self.active || idx >= self.tabs.len() {
+            return;
+        }
+        if let Some(old) = self.tabs[self.active].driver.as_ref() {
+            stop_child(old);
+        }
+        self.active = idx;
+        if let Some(new) = self.tabs[self.active].driver.as_ref() {
+            cont_child(new);
+        }
+        self.save_session();
+    }
+
+    fn close_tab(&mut self, idx: usize) {
+        if idx >= self.tabs.len() {
+            return;
+        }
+        let mut tab = self.tabs.remove(idx);
+        if let Some(mut child) = tab.driver.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_file(&tab.png);
+        if self.tabs.is_empty() {
+            let i = self.new_tab("https://example.com/".to_string());
+            self.active = i;
+            let url = self.tabs[i].history[0].clone();
+            self.navigate(i, &url);
+            return;
+        }
+        if self.active >= self.tabs.len() {
+            self.active = self.tabs.len() - 1;
+        } else if idx < self.active {
+            self.active -= 1;
+        }
+        if let Some(cur) = self.tabs[self.active].driver.as_ref() {
+            cont_child(cur);
+        }
+        self.save_session();
+    }
+
     fn commit_address(&mut self, cx: &mut Context<Self>) {
-        if let Some(url) = normalize_url(&self.addr.clone()) {
-            self.navigate(&url);
+        let active = self.active;
+        if let Some(url) = normalize_url(&self.tabs[active].addr.clone()) {
+            self.navigate(active, &url);
         } else {
-            self.addr = self.history[self.index].clone();
-            self.editing = false;
+            let cur = self.tabs[active].history[self.tabs[active].index].clone();
+            self.tabs[active].addr = cur;
+            self.tabs[active].editing = false;
         }
         cx.notify();
     }
@@ -173,34 +278,42 @@ impl RootView {
     /// owns the loop).
     fn poll(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
-        if let Some(rx) = self.title_rx.as_ref() {
-            while let Ok(line) = rx.try_recv() {
-                let title = line.strip_prefix("title=").unwrap_or(&line);
-                if !title.is_empty() {
-                    self.status = format!("{} — {title}", self.history[self.index]);
-                    changed = true;
+        for tab in self.tabs.iter_mut() {
+            if let Some(rx) = tab.title_rx.as_ref() {
+                while let Ok(line) = rx.try_recv() {
+                    let title = line.strip_prefix("title=").unwrap_or(&line);
+                    if !title.is_empty() {
+                        tab.title = Some(title.to_string());
+                        tab.status =
+                            format!("{} — {title}", tab.history[tab.index]);
+                        changed = true;
+                    }
                 }
             }
         }
-        if let Ok(mtime) = std::fs::metadata(&self.png).and_then(|m| m.modified()) {
-            if Some(mtime) != self.last_mtime {
-                self.png_gen += 1;
-                // One frame file per navigation: a failed/torn copy can only
-                // leave this navigation's slot empty ("rendering…"), never
-                // show another page's pixels.
-                let cached = std::env::temp_dir()
-                    .join(format!("lattice-frame-{}.png", self.nav_id));
-                if std::fs::copy(&self.png, &cached).is_ok() {
-                    self.frame = Some(cached);
-                    if self.status.starts_with("loading ") {
-                        self.status = self.history[self.index].clone();
+        // Only the active tab's pixels are composited.
+        let active = self.active;
+        if let Some(tab) = self.tabs.get_mut(active) {
+            if let Ok(mtime) = std::fs::metadata(&tab.png).and_then(|m| m.modified()) {
+                if Some(mtime) != tab.last_mtime {
+                    let cached = frame_png(tab.id, tab.nav_id);
+                    if std::fs::copy(&tab.png, &cached).is_ok() {
+                        tab.frame = Some(cached);
+                        changed = true;
                     }
-                    changed = true;
+                    tab.last_mtime = Some(mtime);
                 }
-                self.last_mtime = Some(mtime);
             }
         }
         if changed {
+            // Retitle the newest untitled visit for any tab that got a title.
+            for tab in self.tabs.iter() {
+                if let Some(t) = tab.title.clone() {
+                    self.history_log
+                        .retitle(&tab.history[tab.index], &t);
+                }
+            }
+            self.save_session();
             cx.notify();
         }
         true
@@ -208,26 +321,33 @@ impl RootView {
 }
 
 fn btn(
-    id: &'static str,
-    label: &str,
+    id: impl Into<ElementId>,
+    label: String,
+    active: bool,
     cx: &mut Context<RootView>,
     f: impl Fn(&mut RootView, &ClickEvent, &mut Window, &mut Context<RootView>) + 'static,
 ) -> impl IntoElement {
+    let bg = if active {
+        rgba(0xffffff2e)
+    } else {
+        rgba(0xffffff14)
+    };
+    let log_label = label.clone();
     div()
         .id(id)
         .px_3()
         .py_1()
         .mr_1()
         .rounded_full()
-        .bg(rgba(0xffffff14))
+        .bg(bg)
         .border_1()
         .border_color(rgba(0xffffff1f))
         .cursor_pointer()
         .on_click(cx.listener(move |v, e, w, cx| {
-            eprintln!("UI click: {id}");
+            eprintln!("UI click: {log_label}");
             f(v, e, w, cx)
         }))
-        .child(label.to_string())
+        .child(label)
 }
 
 const BOOKMARKS: &[(&str, &str)] = &[
@@ -239,15 +359,48 @@ const BOOKMARKS: &[(&str, &str)] = &[
 
 impl Render for RootView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let status = self.status.clone();
-        let can_back = self.index > 0;
-        let can_fwd = self.index + 1 < self.history.len();
-        let addr_text = if self.editing {
-            format!("{}▏", self.addr)
+        let active = self.active;
+        let tab = &self.tabs[active];
+        let status = tab.status.clone();
+        let can_back = tab.index > 0;
+        let can_fwd = tab.index + 1 < tab.history.len();
+        let addr_text = if tab.editing {
+            format!("{}▏", tab.addr)
         } else {
-            self.history.get(self.index).cloned().unwrap_or_default()
+            tab.history[tab.index].clone()
         };
         let addr_focus = self.addr_focus.clone();
+
+        let mut tabbar = div().flex().flex_row().items_center().px_2().pt_2();
+        for (i, t) in self.tabs.iter().enumerate() {
+            let label = short_title(&t.history[t.index], &t.title);
+            let is_active = i == active;
+            tabbar = tabbar.child(btn(
+                1000 + i,
+                if is_active {
+                    format!("● {label}")
+                } else {
+                    format!("○ {label}")
+                },
+                is_active,
+                cx,
+                move |v, _, _, cx| {
+                    v.switch_tab(i);
+                    cx.notify();
+                },
+            ));
+            tabbar = tabbar.child(btn(2000 + i, "×".to_string(), false, cx, move |v, _, _, cx| {
+                v.close_tab(i);
+                cx.notify();
+            }));
+        }
+        tabbar = tabbar.child(btn("newtab", "+".to_string(), false, cx, move |v, _, _, cx| {
+            let i = v.new_tab("https://example.com/".to_string());
+            let url = v.tabs[i].history[0].clone();
+            v.switch_tab(i);
+            v.navigate(i, &url);
+            cx.notify();
+        }));
 
         let mut bar = div()
             .flex()
@@ -260,23 +413,25 @@ impl Render for RootView {
             .bg(rgba(0x1e1e1ecc))
             .border_1()
             .border_color(rgba(0xffffff1f));
-        bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }, cx, move |v, _, _, cx| {
+        bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }.to_string(), false, cx, move |v, _, _, cx| {
             v.go_offset(-1);
             cx.notify();
         }));
-        bar = bar.child(btn("nav-fwd", if can_fwd { "▶" } else { "·" }, cx, move |v, _, _, cx| {
+        bar = bar.child(btn("nav-fwd", if can_fwd { "▶" } else { "·" }.to_string(), false, cx, move |v, _, _, cx| {
             v.go_offset(1);
             cx.notify();
         }));
-        bar = bar.child(btn("nav-reload", "Reload", cx, move |v, _, _, cx| {
-            let url = v.history[v.index].clone();
-            v.navigate(&url);
+        bar = bar.child(btn("nav-reload", "Reload".to_string(), false, cx, move |v, _, _, cx| {
+            let url = v.tabs[v.active].history[v.tabs[v.active].index].clone();
+            let a = v.active;
+            v.navigate(a, &url);
             cx.notify();
         }));
         for &(name, url) in BOOKMARKS {
             let url = url.to_string();
-            bar = bar.child(btn(name, name, cx, move |v, _, _, cx| {
-                v.navigate(&url);
+            bar = bar.child(btn(name, name.to_string(), false, cx, move |v, _, _, cx| {
+                let a = v.active;
+                v.navigate(a, &url);
                 cx.notify();
             }));
         }
@@ -294,32 +449,35 @@ impl Render for RootView {
             .track_focus(&addr_focus)
             .on_click(cx.listener(move |view, _, window: &mut Window, cx| {
                 eprintln!("UI address click");
-                view.editing = true;
-                view.addr = view.history[view.index].clone();
+                let a = view.active;
+                view.tabs[a].editing = true;
+                let cur = view.tabs[a].history[view.tabs[a].index].clone();
+                view.tabs[a].addr = cur;
                 window.focus(&addr_focus);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _, cx| {
-                eprintln!("UI key: {}", ev.keystroke.key);
                 let ks = &ev.keystroke;
                 if ks.modifiers.control || ks.modifiers.platform {
                     return;
                 }
+                let a = view.active;
                 match ks.key.as_str() {
                     "Enter" => view.commit_address(cx),
                     "Escape" => {
-                        view.editing = false;
-                        view.addr = view.history[view.index].clone();
+                        let cur = view.tabs[a].history[view.tabs[a].index].clone();
+                        view.tabs[a].addr = cur;
+                        view.tabs[a].editing = false;
                         cx.notify();
                     }
                     "Backspace" => {
-                        view.addr.pop();
+                        view.tabs[a].addr.pop();
                         cx.notify();
                     }
                     _ => {
                         if let Some(ch) = ks.key_char.as_deref() {
                             if ch != "\n" {
-                                view.addr.push_str(ch);
+                                view.tabs[a].addr.push_str(ch);
                                 cx.notify();
                             }
                         }
@@ -328,7 +486,7 @@ impl Render for RootView {
             }))
             .child(addr_text);
 
-        let page: AnyElement = match self.frame.clone() {
+        let page: AnyElement = match self.tabs[active].frame.clone() {
             Some(p) => img(p).into_any_element(),
             None => div()
                 .flex()
@@ -357,6 +515,7 @@ impl Render for RootView {
                     .border_1()
                     .border_color(rgba(0xffffff29))
                     .bg(rgba(0x141414e6))
+                    .child(tabbar)
                     .child(bar)
                     .child(address)
                     .child(
@@ -384,9 +543,10 @@ impl Render for RootView {
 
 fn main() {
     tracing_subscriber::fmt::init();
-    let start = std::env::args()
+    let start_url = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "https://example.com/".to_string());
+
     Application::new().run(move |cx: &mut App| {
         let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
         cx.open_window(
@@ -396,8 +556,74 @@ fn main() {
                 ..Default::default()
             },
             {
-                let start = start.clone();
-                move |_, cx| cx.new(|cx| RootView::new(start.clone(), cx))
+                let start_url = start_url.clone();
+                move |_, cx| {
+                    cx.new(|cx| {
+                        // Restore session or start fresh.
+                        let history_log = HistoryLog::load(&data_file("history.json"));
+                        let mut view = RootView {
+                            tabs: Vec::new(),
+                            active: 0,
+                            next_id: 1,
+                            addr_focus: cx.focus_handle(),
+                            history_log,
+                        };
+                        let mut restored = false;
+                        if let Ok(data) = std::fs::read_to_string(RootView::session_path()) {
+                            if let Ok(session) =
+                                serde_json::from_str::<Session>(&data)
+                            {
+                                for (i, t) in session.tabs.iter().enumerate() {
+                                    let idx = view.new_tab(t.url.clone());
+                                    view.tabs[idx].title = if t.title.is_empty() {
+                                        None
+                                    } else {
+                                        Some(t.title.clone())
+                                    };
+                                    if i == session.active {
+                                        view.active = idx;
+                                    }
+                                }
+                                if !view.tabs.is_empty() {
+                                    restored = true;
+                                }
+                            }
+                        }
+                        if !restored {
+                            view.new_tab(start_url.clone());
+                        }
+                        // Clamp active and start drivers: only the active
+                        // tab renders; the rest start stopped.
+                        if view.active >= view.tabs.len() {
+                            view.active = 0;
+                        }
+                        let ids: Vec<u64> = view.tabs.iter().map(|t| t.id).collect();
+                        for (i, id) in ids.iter().enumerate() {
+                            let url = view.tabs[i].history[0].clone();
+                            view.navigate(i, &url);
+                            if i != view.active {
+                                if let Some(c) = view.tabs[i].driver.as_ref() {
+                                    stop_child(c);
+                                }
+                            }
+                            let _ = id;
+                        }
+                        // Pump loop: titles, PNGs, and session saves.
+                        let task = cx.spawn(async move |view, cx| loop {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(200))
+                                .await;
+                            let cont = view
+                                .update(cx, |view: &mut RootView, cx| view.poll(cx))
+                                .unwrap_or(false);
+                            if !cont {
+                                break;
+                            }
+                        });
+                        task.detach();
+                        view
+                    })
+                }
             },
         )
         .expect("open window");
