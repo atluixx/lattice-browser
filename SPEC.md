@@ -95,3 +95,13 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - YouTube in-window pixels still need one clean run (driver flake under
   rapid kill/respawn churn; mitigated with atomic + incremental saves and
   unconditional final readback). Spike-level YouTube/WhatsApp PNGs proven.
+
+## v0.4 tabs + persistence (implemented, visual proof pending idle session)
+- Tab strip with titles, × close, + new tab; per-tab driver + PNG;
+  background tabs SIGSTOP'd, SIGCONT'd on switch.
+- Session (`session.json`: tab URLs/titles + active index) and visit log
+  (`history.json`, 5000 cap, reload collapsing) under
+  ~/.local/share/lattice/; restored on launch, saved on every navigate.
+- Core history tests pass (15 total in lattice-core). In-window
+  restore proof (quit → relaunch → tabs back, screenshot) gated on user
+  idleness; will not steal focus from an active session.
