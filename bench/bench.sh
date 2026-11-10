@@ -19,7 +19,10 @@ if [ -x "$SPIKE" ]; then
   # Peak RSS of the spike process (includes Servo + software rendering).
   # NOTE: spike may segfault during process teardown *after* printing
   # results (no orderly Servo shutdown API in 0.1.4). Judge by output, not exit code.
-  /usr/bin/time -v "$SPIKE" "$URL" "$TIMEOUT" "$OUT_PNG" 2>&1 | grep -E "^(url|title|status|frames|elapsed_ms|pixels|.*Maximum resident)" || true
+  # GNU time comes from PATH (nix-shell -p time); /usr/bin/time is absent on NixOS.
+  # stdbuf keeps spike stdout unbuffered so the segfault can't eat it.
+  command -v time >/dev/null || { echo "need GNU time on PATH"; exit 1; }
+  time -v stdbuf -o0 -e0 "$SPIKE" "$URL" "$TIMEOUT" "$OUT_PNG" 2>&1 | grep -E "^(url|user_agent|title|status_text|status|frames|nonwhite|elapsed|pixels|.*Maximum resident|.*Elapsed)" || true
   echo "png=$OUT_PNG"
 else
   echo "spike not built: $SPIKE"
