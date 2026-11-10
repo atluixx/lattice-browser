@@ -471,15 +471,16 @@ impl Render for RootView {
                     return;
                 }
                 let a = view.active;
-                match ks.key.as_str() {
-                    "Enter" => view.commit_address(cx),
-                    "Escape" => {
+                // NOTE: GPUI key names are lowercase ("enter", "backspace").
+                match ks.key.to_lowercase().as_str() {
+                    "enter" | "return" | "kp_enter" => view.commit_address(cx),
+                    "escape" => {
                         let cur = view.tabs[a].history[view.tabs[a].index].clone();
                         view.tabs[a].addr = cur;
                         view.tabs[a].editing = false;
                         cx.notify();
                     }
-                    "Backspace" => {
+                    "backspace" => {
                         view.tabs[a].addr.pop();
                         cx.notify();
                     }
