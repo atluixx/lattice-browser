@@ -150,3 +150,15 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   against system GStreamer 1.26.11 (dev inputs: gst_all_1 gstreamer, base,
   good, bad, ugly). Remaining: link spike with media, run YouTube, and
   confirm the player shows frames instead of the fallback.
+
+## Video: backend builds, playback still blocked (Nov 10)
+- `media-gstreamer` compiles and links against system GStreamer 1.26.11;
+  the YouTube watch page renders identically with it, but the player
+  still shows the fallback. No playbin/codec errors in logs.
+- Root cause identified one layer deeper: Servo 0.1.4 has no Media Source
+  Extensions (no MediaSource/SourceBuffer WebIDL or DOM bindings), which
+  YouTube requires for adaptive streams. The backend is likely fine; the
+  API surface is missing. Verifying with a progressive MP4 (no MSE needed).
+- Install note for the media driver: binary needs RPATH on the four
+  gst/glib store lib dirs (`patchelf --set-rpath`) plus
+  `GST_PLUGIN_SYSTEM_PATH` at runtime.
