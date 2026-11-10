@@ -105,3 +105,13 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Core history tests pass (15 total in lattice-core). In-window
   restore proof (quit → relaunch → tabs back, screenshot) gated on user
   idleness; will not steal focus from an active session.
+
+## Video playback path (probed, not yet built)
+- Servo 0.1.4 exposes a `media-gstreamer` feature; system has GStreamer
+  runtime libs but the build needs nixpkgs `gst_all_1` dev packages
+  (mirror nixpkgs servo package inputs: gstreamer, base, good, bad,
+  ugly + `media-gstreamer` feature on the embed).
+- Deliberately NOT started while the user is active: it pulls a heavy
+  native compile on a 7.4GB machine already under memory pressure.
+  Next: enable behind a `media` feature, `cargo check` headless, then
+  verify a playing video in-window (needs GL display + idle session).
