@@ -41,7 +41,8 @@ fn main() {
             let dims = (img.width(), img.height());
             // Atomic handoff: the shell polls this path, so never expose a
             // half-written PNG (kill -9 mid-save under rapid navigation).
-            let part = format!("{out_png}.part");
+            // Note: the temp name must keep a valid image extension.
+            let part = format!("{out_png}.part.png");
             match img.save(&part) {
                 Ok(()) => match std::fs::rename(&part, &out_png) {
                     Ok(()) => (true, dims),
