@@ -49,7 +49,7 @@ fn main() {
     };
 
     println!("url={url_str}");
-    println!("title={:?}", report.title);
+    println!("title={}", report.title.as_deref().unwrap_or(""));
     println!("status_text={:?}", report.status_text);
     println!("status={:?}", report.status);
     println!("frames={}", report.frames);

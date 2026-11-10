@@ -56,7 +56,7 @@ fn main() {
             None => (false, (0, 0)),
         };
         println!("url={url}");
-        println!("title={:?}", report.title);
+        println!("title={}", report.title.as_deref().unwrap_or(""));
         println!("status={:?}", report.status);
         println!("frames={}", report.frames);
         println!("nonwhite_sample10={best_nonwhite}");
