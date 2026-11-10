@@ -77,6 +77,7 @@ struct RootView {
     title_rx: Option<Receiver<String>>,
     png: PathBuf,
     png_gen: u64,
+    nav_id: u64,
     last_mtime: Option<std::time::SystemTime>,
     addr: String,
     editing: bool,
@@ -95,6 +96,7 @@ impl RootView {
             title_rx: None,
             png: page_png(),
             png_gen: 0,
+            nav_id: 0,
             last_mtime: None,
             addr: start_url.clone(),
             editing: false,
@@ -131,6 +133,12 @@ impl RootView {
         self.addr = url.to_string();
         self.editing = false;
         self.last_mtime = None;
+        self.nav_id += 1;
+        // Drop the previous navigation's frame file so a torn copy can never
+        // resurface as stale content.
+        let _ = std::fs::remove_file(
+            std::env::temp_dir().join(format!("lattice-frame-{}.png", self.nav_id)),
+        );
         let (child, title_rx, png) = spawn_driver(url);
         self.driver = Some(child);
         self.title_rx = Some(title_rx);
@@ -172,8 +180,11 @@ impl RootView {
         if let Ok(mtime) = std::fs::metadata(&self.png).and_then(|m| m.modified()) {
             if Some(mtime) != self.last_mtime {
                 self.png_gen += 1;
-                let cached =
-                    std::env::temp_dir().join(format!("lattice-frame-{}.png", self.png_gen % 2));
+                // One frame file per navigation: a failed/torn copy can only
+                // leave this navigation's slot empty ("rendering…"), never
+                // show another page's pixels.
+                let cached = std::env::temp_dir()
+                    .join(format!("lattice-frame-{}.png", self.nav_id));
                 if std::fs::copy(&self.png, &cached).is_ok() {
                     self.frame = Some(cached);
                     if self.status.starts_with("loading ") {

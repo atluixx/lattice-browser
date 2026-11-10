@@ -37,7 +37,10 @@ fn main() {
     let (saved, dims) = match &best {
         Some(img) => {
             let dims = (img.width(), img.height());
-            match img.save(&out_png) {
+            // Atomic handoff: the shell polls this path, so never expose a
+            // half-written PNG (kill -9 mid-save under rapid navigation).
+            let part = format!("{out_png}.part");
+            match img.save(&part).and_then(|()| std::fs::rename(&part, &out_png)) {
                 Ok(()) => (true, dims),
                 Err(e) => {
                     eprintln!("png save failed: {e}");
