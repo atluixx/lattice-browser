@@ -190,13 +190,15 @@ impl HeadlessPage {
         Some((img, count))
     }
 
-    /// Paint, wait for fresh frames, keep the richest one. Returns the image
-    /// plus sampled non-white pixel count. Call `present` semantics: reads
-    /// happen BEFORE present (swap uses `PreserveBuffer::No`).
+    /// Paint, wait for fresh frames, keep the richest one. Saves progress
+    /// incrementally to `save_path` (atomic rename) so a mid-settle crash
+    /// still leaves a usable render. Always does a final unconditional read:
+    /// some pages report no new frames while holding a complete buffer.
     pub fn settle_best_frame(
         &self,
         session: &HeadlessSession,
         settle: Duration,
+        save_path: Option<&std::path::Path>,
     ) -> (Option<image::RgbaImage>, u64) {
         let rect = DeviceIntRect::from_origin_and_size(
             DeviceIntPoint::new(0, 0),
@@ -205,15 +207,35 @@ impl HeadlessPage {
         let mut best: Option<image::RgbaImage> = None;
         let mut best_nonwhite = 0u64;
         let mut last_frames = self.delegate.frames.get();
+        let mut last_log = Instant::now();
         let start = Instant::now();
+        let mut save_best = |img: &image::RgbaImage| {
+            if let Some(path) = save_path {
+                let part = path.with_extension("part.png");
+                match img.save(&part).and_then(|()| std::fs::rename(&part, path)) {
+                    Ok(()) => eprintln!("spike progress: saved frame {}x{}", img.width(), img.height()),
+                    Err(e) => eprintln!("spike progress: save failed: {e}"),
+                }
+            }
+        };
         self.webview.paint();
         while start.elapsed() < settle {
             session.pump_once(Duration::from_millis(100));
+            if last_log.elapsed() > Duration::from_secs(2) {
+                eprintln!(
+                    "spike progress: frames={} best_nonwhite={} elapsed_ms={}",
+                    self.delegate.frames.get(),
+                    best_nonwhite,
+                    start.elapsed().as_millis()
+                );
+                last_log = Instant::now();
+            }
             if self.delegate.frames.get() != last_frames {
                 last_frames = self.delegate.frames.get();
                 if let Some((img, count)) = self.read_richness(rect) {
                     if count >= best_nonwhite {
                         best_nonwhite = count;
+                        save_best(&img);
                         best = Some(img);
                     }
                 }
@@ -223,15 +245,23 @@ impl HeadlessPage {
                 && last_frames == self.delegate.frames.get()
                 && start.elapsed() > Duration::from_millis(1500)
             {
-                if best.is_none() {
-                    if let Some((img, count)) = self.read_richness(rect) {
-                        best_nonwhite = count;
-                        best = Some(img);
-                    }
-                }
                 break;
             }
         }
+        // Unconditional final read: never return None when pixels exist.
+        if let Some((img, count)) = self.read_richness(rect) {
+            if best.is_none() || count > best_nonwhite {
+                eprintln!("spike progress: final read nonwhite={count}");
+                best_nonwhite = count;
+                save_best(&img);
+                best = Some(img);
+            }
+        }
+        eprintln!(
+            "spike progress: settle done frames={} best_nonwhite={}",
+            self.delegate.frames.get(),
+            best_nonwhite
+        );
         self.context.present();
         (best, best_nonwhite)
     }

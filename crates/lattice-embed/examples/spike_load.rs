@@ -31,7 +31,9 @@ fn main() {
     println!("user_agent={}", session.user_agent());
     let page = session.page(url_str, WIDTH, HEIGHT);
     session.pump_until_complete(std::slice::from_ref(&page), Duration::from_secs(timeout));
-    let (best, best_nonwhite) = page.settle_best_frame(&session, Duration::from_secs(12));
+    let out_path = std::path::PathBuf::from(&out_png);
+    let (best, best_nonwhite) =
+        page.settle_best_frame(&session, Duration::from_secs(12), Some(&out_path));
     let report = page.report();
 
     let (saved, dims) = match &best {

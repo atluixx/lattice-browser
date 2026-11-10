@@ -24,7 +24,7 @@ pub fn spawn_servo(url: String, tx: Sender<FrameMsg>) {
         // Keep refreshing: animated pages produce new frames; the shell
         // always shows the richest recent one.
         loop {
-            let (best, _) = page.settle_best_frame(&session, Duration::from_secs(4));
+            let (best, _) = page.settle_best_frame(&session, Duration::from_secs(4), None);
             let report = page.report();
             if let Some(img) = best {
                 let (w, h) = (img.width(), img.height());

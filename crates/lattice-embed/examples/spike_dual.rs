@@ -39,9 +39,11 @@ fn main() {
 
     let mut all_complete = true;
     for (i, (url, page)) in SITES.iter().zip(pages.iter()).enumerate() {
-        let (best, best_nonwhite) = page.settle_best_frame(&session, Duration::from_secs(12));
-        let report = page.report();
         let out_png = format!("{out_dir}/lattice-spike-dual-{i}.png");
+        let out_path = std::path::PathBuf::from(&out_png);
+        let (best, best_nonwhite) =
+            page.settle_best_frame(&session, Duration::from_secs(12), Some(&out_path));
+        let report = page.report();
         let (saved, dims) = match &best {
             Some(img) => {
                 let dims = (img.width(), img.height());

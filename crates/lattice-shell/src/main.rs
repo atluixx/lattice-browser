@@ -36,11 +36,16 @@ fn page_png() -> PathBuf {
 fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
     let out_png = page_png();
     let _ = std::fs::remove_file(&out_png);
+    let err_log = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/opencode/lattice-driver-stderr.log")
+        .ok();
     let mut child = Command::new(driver_binary())
         .args([url, &"60".to_string(), &out_png.display().to_string()])
         .env("LATTICE_UA", chrome_ua())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(err_log.map_or(Stdio::null(), Stdio::from))
         .spawn()
         .expect("spawn driver");
     let (tx, rx) = channel();
