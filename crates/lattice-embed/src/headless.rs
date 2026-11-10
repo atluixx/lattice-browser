@@ -212,8 +212,11 @@ impl HeadlessPage {
         let mut save_best = |img: &image::RgbaImage| {
             if let Some(path) = save_path {
                 let part = path.with_extension("part.png");
-                match img.save(&part).and_then(|()| std::fs::rename(&part, path)) {
-                    Ok(()) => eprintln!("spike progress: saved frame {}x{}", img.width(), img.height()),
+                match img.save(&part) {
+                    Ok(()) => match std::fs::rename(&part, path) {
+                        Ok(()) => eprintln!("spike progress: saved frame {}x{}", img.width(), img.height()),
+                        Err(e) => eprintln!("spike progress: rename failed: {e}"),
+                    },
                     Err(e) => eprintln!("spike progress: save failed: {e}"),
                 }
             }
