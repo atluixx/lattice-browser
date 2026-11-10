@@ -1,0 +1,11 @@
+[package]
+name = "lattice-shell"
+version = "0.0.1"
+edition = "2021"
+
+[dependencies]
+gpui = { workspace = true }
+lattice-core = { path = "../lattice-core" }
+lattice-embed = { path = "../lattice-embed" }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
