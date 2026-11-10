@@ -206,3 +206,16 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   (Tab2->Tab1). + button and navigate-verified; switch-back screenshot
   pending an idle moment. Video has no audio verification and no HW
   decode; YouTube needs MSE (absent in Servo 0.1.4) regardless of backend.
+
+## Video: DECODES CLEANLY with full plugin set (Nov 10)
+- MP4 (flower.mp4, H.264): 0 player errors, 0 missing-plugin errors,
+  decoded flower frame saved (51k non-white samples).
+  `GST_PLUGIN_PATH` = union of the 5 nixpkgs 1.26.11 plugin dirs
+  (good, bad, libav, base + base deps). Do NOT use
+  GST_PLUGIN_SYSTEM_PATH alone: something in this environment makes
+  GStreamer ignore it and scan only /usr/lib (foreign install), which
+  lacks demuxers/decoders. aacparse (bad) + avdec_aac (libav) verified
+  present via gst-inspect.
+- Remaining video work: audibility (pipeline prerolls; no listening
+  test), hardware decode (untouched), MSE (absent in Servo 0.1.4, so
+  YouTube proper stays on the fallback), in-window playback screenshot.
