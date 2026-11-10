@@ -215,11 +215,13 @@ fn btn(
 ) -> impl IntoElement {
     div()
         .id(id)
-        .px_2()
+        .px_3()
         .py_1()
         .mr_1()
-        .rounded_md()
-        .bg(rgb(0x3a3a3a))
+        .rounded_full()
+        .bg(rgba(0xffffff14))
+        .border_1()
+        .border_color(rgba(0xffffff1f))
         .cursor_pointer()
         .on_click(cx.listener(move |v, e, w, cx| {
             eprintln!("UI click: {id}");
@@ -247,7 +249,17 @@ impl Render for RootView {
         };
         let addr_focus = self.addr_focus.clone();
 
-        let mut bar = div().flex().flex_row().px_2().py_1().bg(rgb(0x2d2d2d));
+        let mut bar = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .px_3()
+            .py_2()
+            .m_2()
+            .rounded_2xl()
+            .bg(rgba(0x1e1e1ecc))
+            .border_1()
+            .border_color(rgba(0xffffff1f));
         bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }, cx, move |v, _, _, cx| {
             v.go_offset(-1);
             cx.notify();
@@ -271,11 +283,13 @@ impl Render for RootView {
         let address = div()
             .id("address-bar")
             .flex_1()
-            .px_2()
+            .px_3()
             .py_1()
             .ml_1()
-            .rounded_md()
-            .bg(rgb(0x1a1a1a))
+            .rounded_full()
+            .bg(rgba(0x00000066))
+            .border_1()
+            .border_color(rgba(0xffffff14))
             .cursor_text()
             .track_focus(&addr_focus)
             .on_click(cx.listener(move |view, _, window: &mut Window, cx| {
@@ -328,19 +342,43 @@ impl Render for RootView {
         div()
             .flex()
             .flex_col()
-            .bg(rgb(0x1e1e1e))
+            .bg(rgba(0x00000000))
             .text_color(rgb(0xd4d4d4))
             .size_full()
-            .child(bar)
-            .child(address)
+            .p_2()
+            .gap_2()
             .child(
                 div()
-                    .px_2()
-                    .py_1()
-                    .bg(rgb(0x252525))
-                    .child(format!("{status}")),
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .rounded_2xl()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(rgba(0xffffff29))
+                    .bg(rgba(0x141414e6))
+                    .child(bar)
+                    .child(address)
+                    .child(
+                        div()
+                            .px_3()
+                            .py_1()
+                            .bg(rgba(0x00000033))
+                            .text_xs()
+                            .child(format!("{status}")),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .m_2()
+                            .rounded_xl()
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(rgba(0xffffff14))
+                            .bg(rgba(0x0a0a0af2))
+                            .child(page),
+                    ),
             )
-            .child(div().flex_1().child(page))
     }
 }
 
@@ -354,6 +392,7 @@ fn main() {
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_background: WindowBackgroundAppearance::Transparent,
                 ..Default::default()
             },
             {
