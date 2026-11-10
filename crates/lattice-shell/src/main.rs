@@ -1,26 +1,19 @@
-//! Lattice v0.2 testable browser (two-process).
+//! Lattice v0.3 testable browser (two-process).
 //!
-//! GPUI window: toolbar (Back/Forward/Reload/Go/bookmarks), address status,
+//! GPUI window: toolbar (Back/Forward/Reload/bookmarks), clickable address
+//! bar with keyboard editing (Enter commits, Esc cancels), status line,
 //! page view. The Servo driver runs as a child process per navigation and
-//! writes PNGs; this process polls for title lines on its stdout and for
-//! PNG updates. Kill-and-respawn stands in for tab lifecycle until the
-//! single-binary link issue is resolved. `zenity --entry` stands in for
-//! address-bar typing until GPUI text input is built.
+//! writes PNGs; this process polls for titles on its stdout and for PNG
+//! updates. Kill-and-respawn stands in for tab lifecycle until the
+//! single-binary link issue is resolved.
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use gpui::*;
-
-const BOOKMARKS: &[(&str, &str)] = &[
-    ("Example", "https://example.com/"),
-    ("Google", "https://www.google.com/"),
-    ("YouTube", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"),
-    ("WhatsApp", "https://web.whatsapp.com/"),
-];
 
 fn driver_binary() -> String {
     std::env::var("LATTICE_DRIVER")
@@ -44,14 +37,14 @@ fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
     let out_png = page_png();
     let _ = std::fs::remove_file(&out_png);
     let mut child = Command::new(driver_binary())
-        .args([url, &"120".to_string(), &out_png.display().to_string()])
+        .args([url, &"60".to_string(), &out_png.display().to_string()])
         .env("LATTICE_UA", chrome_ua())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("spawn driver");
     let (tx, rx) = channel();
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = child.take_stdout() {
         std::thread::spawn(move || {
             for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                 if line.starts_with("title=") {
@@ -63,19 +56,15 @@ fn spawn_driver(url: &str) -> (Child, Receiver<String>, PathBuf) {
     (child, rx, out_png)
 }
 
-fn prompt_url() -> Option<String> {
-    let out = Command::new("zenity")
-        .args(["--entry", "--title=Lattice", "--text=URL:"])
-        .output()
-        .ok()?;
-    if !out.status.success() {
+fn normalize_url(raw: &str) -> Option<String> {
+    let s = raw.trim();
+    if s.is_empty() {
         return None;
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() {
-        None
+    if s.contains("://") {
+        Some(s.to_string())
     } else {
-        Some(s)
+        Some(format!("https://{s}"))
     }
 }
 
@@ -89,13 +78,14 @@ struct RootView {
     png: PathBuf,
     png_gen: u64,
     last_mtime: Option<std::time::SystemTime>,
-    nav_rx: Receiver<String>,
-    nav_tx: Sender<String>,
+    addr: String,
+    editing: bool,
+    addr_focus: FocusHandle,
 }
 
 impl RootView {
     fn new(start_url: String, cx: &mut Context<Self>) -> Self {
-        let (nav_tx, nav_rx) = channel::<String>();
+        let addr_focus = cx.focus_handle();
         let mut view = Self {
             history: Vec::new(),
             index: 0,
@@ -106,8 +96,9 @@ impl RootView {
             png: page_png(),
             png_gen: 0,
             last_mtime: None,
-            nav_rx,
-            nav_tx,
+            addr: start_url.clone(),
+            editing: false,
+            addr_focus,
         };
         view.navigate(&start_url);
         let task = cx.spawn(async move |view, cx| loop {
@@ -137,6 +128,8 @@ impl RootView {
         }
         self.frame = None;
         self.status = format!("loading {url} …");
+        self.addr = url.to_string();
+        self.editing = false;
         self.last_mtime = None;
         let (child, title_rx, png) = spawn_driver(url);
         self.driver = Some(child);
@@ -153,19 +146,27 @@ impl RootView {
         }
     }
 
+    fn commit_address(&mut self, cx: &mut Context<Self>) {
+        if let Some(url) = normalize_url(&self.addr.clone()) {
+            self.navigate(&url);
+        } else {
+            self.addr = self.history[self.index].clone();
+            self.editing = false;
+        }
+        cx.notify();
+    }
+
     /// Returns false when polling should stop (currently never: the window
     /// owns the loop).
     fn poll(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
-        while let Ok(url) = self.nav_rx.try_recv() {
-            self.navigate(&url);
-            changed = true;
-        }
         if let Some(rx) = self.title_rx.as_ref() {
             while let Ok(line) = rx.try_recv() {
                 let title = line.strip_prefix("title=").unwrap_or(&line);
-                self.status = format!("{} — {title}", self.history[self.index]);
-                changed = true;
+                if !title.is_empty() {
+                    self.status = format!("{} — {title}", self.history[self.index]);
+                    changed = true;
+                }
             }
         }
         if let Ok(mtime) = std::fs::metadata(&self.png).and_then(|m| m.modified()) {
@@ -175,6 +176,9 @@ impl RootView {
                     std::env::temp_dir().join(format!("lattice-frame-{}.png", self.png_gen % 2));
                 if std::fs::copy(&self.png, &cached).is_ok() {
                     self.frame = Some(cached);
+                    if self.status.starts_with("loading ") {
+                        self.status = self.history[self.index].clone();
+                    }
                     changed = true;
                 }
                 self.last_mtime = Some(mtime);
@@ -205,12 +209,24 @@ fn btn(
         .child(label.to_string())
 }
 
+const BOOKMARKS: &[(&str, &str)] = &[
+    ("Example", "https://example.com/"),
+    ("Google", "https://www.google.com/"),
+    ("YouTube", "https://www.youtube.com/watch?v=aqz-KE-bpKQ"),
+    ("WhatsApp", "https://web.whatsapp.com/"),
+];
+
 impl Render for RootView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.status.clone();
         let can_back = self.index > 0;
         let can_fwd = self.index + 1 < self.history.len();
-        let nav_tx = self.nav_tx.clone();
+        let addr_text = if self.editing {
+            format!("{}▏", self.addr)
+        } else {
+            self.history.get(self.index).cloned().unwrap_or_default()
+        };
+        let addr_focus = self.addr_focus.clone();
 
         let mut bar = div().flex().flex_row().px_2().py_1().bg(rgb(0x2d2d2d));
         bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }, cx, move |v, _, _, cx| {
@@ -226,14 +242,6 @@ impl Render for RootView {
             v.navigate(&url);
             cx.notify();
         }));
-        bar = bar.child(btn("nav-go", "Go…", cx, move |_, _, _, _| {
-            let tx = nav_tx.clone();
-            std::thread::spawn(move || {
-                if let Some(url) = prompt_url() {
-                    let _ = tx.send(url);
-                }
-            });
-        }));
         for &(name, url) in BOOKMARKS {
             let url = url.to_string();
             bar = bar.child(btn(name, name, cx, move |v, _, _, cx| {
@@ -241,6 +249,49 @@ impl Render for RootView {
                 cx.notify();
             }));
         }
+        let address = div()
+            .id("address-bar")
+            .flex_1()
+            .px_2()
+            .py_1()
+            .ml_1()
+            .rounded_md()
+            .bg(rgb(0x1a1a1a))
+            .cursor_text()
+            .track_focus(&addr_focus)
+            .on_click(cx.listener(move |view, _, window: &mut Window, cx| {
+                view.editing = true;
+                view.addr = view.history[view.index].clone();
+                window.focus(&addr_focus);
+                cx.notify();
+            }))
+            .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _, cx| {
+                let ks = &ev.keystroke;
+                if ks.modifiers.control || ks.modifiers.platform {
+                    return;
+                }
+                match ks.key.as_str() {
+                    "Enter" => view.commit_address(cx),
+                    "Escape" => {
+                        view.editing = false;
+                        view.addr = view.history[view.index].clone();
+                        cx.notify();
+                    }
+                    "Backspace" => {
+                        view.addr.pop();
+                        cx.notify();
+                    }
+                    _ => {
+                        if let Some(ch) = ks.key_char.as_deref() {
+                            if ch != "\n" {
+                                view.addr.push_str(ch);
+                                cx.notify();
+                            }
+                        }
+                    }
+                }
+            }))
+            .child(addr_text);
 
         let page: AnyElement = match self.frame.clone() {
             Some(p) => img(p).into_any_element(),
@@ -260,6 +311,7 @@ impl Render for RootView {
             .text_color(rgb(0xd4d4d4))
             .size_full()
             .child(bar)
+            .child(address)
             .child(
                 div()
                     .px_2()
