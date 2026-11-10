@@ -205,7 +205,10 @@ fn btn(
         .rounded_md()
         .bg(rgb(0x3a3a3a))
         .cursor_pointer()
-        .on_click(cx.listener(f))
+        .on_click(cx.listener(move |v, e, w, cx| {
+            eprintln!("UI click: {id}");
+            f(v, e, w, cx)
+        }))
         .child(label.to_string())
 }
 
@@ -260,12 +263,14 @@ impl Render for RootView {
             .cursor_text()
             .track_focus(&addr_focus)
             .on_click(cx.listener(move |view, _, window: &mut Window, cx| {
+                eprintln!("UI address click");
                 view.editing = true;
                 view.addr = view.history[view.index].clone();
                 window.focus(&addr_focus);
                 cx.notify();
             }))
             .on_key_down(cx.listener(|view, ev: &KeyDownEvent, _, cx| {
+                eprintln!("UI key: {}", ev.keystroke.key);
                 let ks = &ev.keystroke;
                 if ks.modifiers.control || ks.modifiers.platform {
                     return;
