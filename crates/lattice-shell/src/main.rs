@@ -34,8 +34,8 @@ fn tab_png(id: u64) -> PathBuf {
     std::env::temp_dir().join(format!("lattice-page-{id}.png"))
 }
 
-fn frame_png(id: u64, nav: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("lattice-frame-{id}-{nav}.png"))
+fn frame_png(id: u64, nav: u64, seq: u64) -> PathBuf {
+    std::env::temp_dir().join(format!("lattice-frame-{id}-{nav}-{seq}.png"))
 }
 
 /// Spawn the Servo driver for `url`, rendering to `out_png`.
@@ -123,6 +123,7 @@ struct Tab {
     title_rx: Option<Receiver<String>>,
     png: PathBuf,
     nav_id: u64,
+    frame_seq: u64,
     last_mtime: Option<std::time::SystemTime>,
     addr: String,
     editing: bool,
@@ -173,6 +174,7 @@ impl RootView {
             title_rx: None,
             png: tab_png(id),
             nav_id: 0,
+            frame_seq: 0,
             last_mtime: None,
             addr: url.clone(),
             editing: false,
@@ -201,7 +203,7 @@ impl RootView {
             t.editing = false;
             t.last_mtime = None;
             t.nav_id += 1;
-            let _ = std::fs::remove_file(frame_png(t.id, t.nav_id));
+            t.frame_seq = 0;
             let (child, title_rx) = spawn_driver(url, &t.png.clone());
             t.driver = Some(child);
             t.title_rx = Some(title_rx);
@@ -296,7 +298,17 @@ impl RootView {
         if let Some(tab) = self.tabs.get_mut(active) {
             if let Ok(mtime) = std::fs::metadata(&tab.png).and_then(|m| m.modified()) {
                 if Some(mtime) != tab.last_mtime {
-                    let cached = frame_png(tab.id, tab.nav_id);
+                    // Unique path per copy: GPUI caches images by path, so
+                    // reusing one path would freeze the first frame.
+                    tab.frame_seq += 1;
+                    let cached = frame_png(tab.id, tab.nav_id, tab.frame_seq);
+                    if tab.frame_seq > 1 {
+                        let _ = std::fs::remove_file(frame_png(
+                            tab.id,
+                            tab.nav_id,
+                            tab.frame_seq - 1,
+                        ));
+                    }
                     if std::fs::copy(&tab.png, &cached).is_ok() {
                         tab.frame = Some(cached);
                         changed = true;
