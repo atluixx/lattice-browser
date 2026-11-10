@@ -162,3 +162,14 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Install note for the media driver: binary needs RPATH on the four
   gst/glib store lib dirs (`patchelf --set-rpath`) plus
   `GST_PLUGIN_SYSTEM_PATH` at runtime.
+
+## Video: native controls render, no frames yet (Nov 10)
+- Direct MP4 loads the native video element with controls (play button,
+  timeline, volume, fullscreen) but duration reads 00:00 and no frames
+  flow. Backend present, data path not completing.
+- Prime suspect: demuxer/decoder plugins missing from the test env
+  (qtdemux lives in gst-plugins-good, H.264 decode in bad/openh264 or
+  libav — only base+bad were on GST_PLUGIN_SYSTEM_PATH). Retesting with
+  good+ugly+libav plugin paths plus GST_DEBUG capture.
+- YouTube additionally needs MSE (no MediaSource bindings in 0.1.4),
+  independent of backend health.
