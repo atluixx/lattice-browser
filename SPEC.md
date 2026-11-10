@@ -187,3 +187,22 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Still open: audio output unverified, hardware decode untouched,
   YouTube needs MSE (no MediaSource bindings in Servo 0.1.4 — separate,
   larger gap), in-window video screenshot pending an idle session.
+
+## Corrections from live testing (Nov 10)
+- Drivers are currently ONE-SHOT: spike_load renders once, saves, and
+  exits (exit 0/2). Background tabs therefore show static snapshots, not
+  live pages; SIGSTOP/SIGCONT only engages if the user switches tabs
+  mid-render (~15-60s window). The v0.4 architecture doc implied
+  long-lived frozen drivers — correct statement: per-navigation renderer
+  processes with SIGSTOP available during their render window. A
+  persistent-driver design (live background tabs) is future work and
+  changes the memory story, since N live Servo instances cost N× engine.
+- Proven visually: session restore with 2 titled tabs + active YouTube
+  page rendered in-window (v28); typed-URL navigation with title/status
+  update + in-window pixels (v25); full YouTube watch page pixels via the
+  exact texture files the window composites (frame-1-3.png); MP4 decodes
+  to real frames via the GStreamer backend (flower.png).
+- NOT yet proven visually: clicking an inactive tab pill to switch
+  (Tab2->Tab1). + button and navigate-verified; switch-back screenshot
+  pending an idle moment. Video has no audio verification and no HW
+  decode; YouTube needs MSE (absent in Servo 0.1.4) regardless of backend.
