@@ -80,7 +80,7 @@ fn prompt_url() -> Option<String> {
 }
 
 struct RootView {
-    history: Vec<String>,,
+    history: Vec<String>,
     index: usize,
     status: String,
     frame: Option<PathBuf>,
@@ -188,11 +188,13 @@ impl RootView {
 }
 
 fn btn(
+    id: &'static str,
     label: &str,
     cx: &mut Context<RootView>,
     f: impl Fn(&mut RootView, &ClickEvent, &mut Window, &mut Context<RootView>) + 'static,
 ) -> impl IntoElement {
     div()
+        .id(id)
         .px_2()
         .py_1()
         .mr_1()
@@ -211,20 +213,20 @@ impl Render for RootView {
         let nav_tx = self.nav_tx.clone();
 
         let mut bar = div().flex().flex_row().px_2().py_1().bg(rgb(0x2d2d2d));
-        bar = bar.child(btn(if can_back { "◀" } else { "·" }, cx, move |v, _, _, cx| {
+        bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }, cx, move |v, _, _, cx| {
             v.go_offset(-1);
             cx.notify();
         }));
-        bar = bar.child(btn(if can_fwd { "▶" } else { "·" }, cx, move |v, _, _, cx| {
+        bar = bar.child(btn("nav-fwd", if can_fwd { "▶" } else { "·" }, cx, move |v, _, _, cx| {
             v.go_offset(1);
             cx.notify();
         }));
-        bar = bar.child(btn("Reload", cx, move |v, _, _, cx| {
+        bar = bar.child(btn("nav-reload", "Reload", cx, move |v, _, _, cx| {
             let url = v.history[v.index].clone();
             v.navigate(&url);
             cx.notify();
         }));
-        bar = bar.child(btn("Go…", cx, move |_, _, _, _| {
+        bar = bar.child(btn("nav-go", "Go…", cx, move |_, _, _, _| {
             let tx = nav_tx.clone();
             std::thread::spawn(move || {
                 if let Some(url) = prompt_url() {
@@ -232,9 +234,9 @@ impl Render for RootView {
                 }
             });
         }));
-        for (name, url) in BOOKMARKS {
+        for &(name, url) in BOOKMARKS {
             let url = url.to_string();
-            bar = bar.child(btn(name, cx, move |v, _, _, cx| {
+            bar = bar.child(btn(name, name, cx, move |v, _, _, cx| {
                 v.navigate(&url);
                 cx.notify();
             }));
