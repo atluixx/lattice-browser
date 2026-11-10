@@ -133,3 +133,14 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   translucent panels over compositor blur.
 - Known annoyance: OS "Service Crash" notification on driver teardown
   (no orderly Servo shutdown in 0.1.4; render always completes first).
+
+## Video playback: scoped, not started
+- Path: `lattice-embed/media` feature -> `servo/media-gstreamer`
+  (exists in Servo 0.1.4; needs gstreamer-rs 0.25 / GStreamer >= 1.18 API).
+  System has GStreamer runtime libs; build needs nixpkgs `gst_all_1`
+  dev packages (gstreamer, base, good, bad, ugly) and runtime
+  `GST_PLUGIN_PATH` with decode plugins (H.264/VP9) + audio sink.
+- Deliberately not compiled yet: enabling it triggers a near-full Servo
+  rebuild (all cores, ~10 min) on a 7.4GB machine already under memory
+  pressure while the user is active. Build + in-window playing-video
+  verification is queued for an idle session.

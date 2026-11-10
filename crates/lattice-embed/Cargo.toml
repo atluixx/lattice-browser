@@ -22,3 +22,8 @@ servo-embed = [
     "dep:webrender_api",
     "dep:rustls",
 ]
+# Servo GStreamer media backend (video/audio). Requires system
+# GStreamer dev packages (nixpkgs gst_all_1: gstreamer, base, good,
+# bad, ugly) + GST_PLUGIN_PATH at runtime. Off by default: it roughly
+# doubles the Servo link set and needs codecs present to do anything.
+media = ["servo-embed", "servo/media-gstreamer"]
