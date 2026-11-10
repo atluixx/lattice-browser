@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use servo::{
-    EventLoopWaker, LoadStatus, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext,
-    WebView, WebViewBuilder, WebViewDelegate,
+    EventLoopWaker, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView,
+    WebViewBuilder, WebViewDelegate,
 };
 use webrender_api::units::{DeviceIntPoint, DeviceIntRect, DeviceIntSize};
 
