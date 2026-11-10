@@ -4912,6 +4912,7 @@ name = "lattice-shell"
 version = "0.0.1"
 dependencies = [
  "gpui",
+ "image",
  "lattice-core",
  "lattice-embed",
  "tracing",
