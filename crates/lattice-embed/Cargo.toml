@@ -6,14 +6,19 @@ edition = "2021"
 [dependencies]
 tracing = { workspace = true }
 servo = { version = "=0.1.4", optional = true }
-
-[dev-dependencies]
-url = "2"
-image = { version = "0.25", features = ["png"] }
-dpi = "0.1"
-webrender_api = "0.68"
-rustls = { version = "0.23", features = ["ring"] }
+url = { version = "2", optional = true }
+image = { version = "0.25", features = ["png"], optional = true }
+dpi = { version = "0.1", optional = true }
+webrender_api = { version = "0.68", optional = true }
+rustls = { version = "0.23", features = ["ring"], optional = true }
 
 [features]
 default = []
-servo-embed = ["servo"]
+servo-embed = [
+    "dep:servo",
+    "dep:url",
+    "dep:image",
+    "dep:dpi",
+    "dep:webrender_api",
+    "dep:rustls",
+]

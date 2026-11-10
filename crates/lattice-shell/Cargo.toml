@@ -9,3 +9,8 @@ lattice-core = { path = "../lattice-core" }
 lattice-embed = { path = "../lattice-embed" }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+image = "0.25"
+
+[features]
+default = []
+servo = ["lattice-embed/servo-embed"]
