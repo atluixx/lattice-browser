@@ -209,7 +209,7 @@ impl HeadlessPage {
         let mut last_frames = self.delegate.frames.get();
         let mut last_log = Instant::now();
         let start = Instant::now();
-        let mut save_best = |img: &image::RgbaImage| {
+        let save_best = |img: &image::RgbaImage| {
             if let Some(path) = save_path {
                 let part = path.with_extension("part.png");
                 match img.save(&part) {

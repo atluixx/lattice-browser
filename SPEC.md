@@ -84,3 +84,14 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Cold start with 2-tab restore < 2s on NVMe NixOS.
 - CI gate: 3-run bench, fail if > target + 10%, always with same-machine
   Firefox A/B. Never claim Servo efficiency without numbers.
+
+## v0.3 interaction evidence (Nov 10, xdotool + screenshots)
+
+- Bookmark/Back/Reload/address clicks all dispatch (run-log lines
+  `UI click: nav-*`, `UI click: Example|Google|YouTube`,
+  `UI address click`); bookmark click drives navigate, live title in the
+  status bar, Back enables with history.
+- In-window page texture proven for example.com and Google consent page.
+- YouTube in-window pixels still need one clean run (driver flake under
+  rapid kill/respawn churn; mitigated with atomic + incremental saves and
+  unconditional final readback). Spike-level YouTube/WhatsApp PNGs proven.
