@@ -115,3 +115,21 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   native compile on a 7.4GB machine already under memory pressure.
   Next: enable behind a `media` feature, `cargo check` headless, then
   verify a playing video in-window (needs GL display + idle session).
+
+## End-to-end proofs (Nov 10, live session, screenshots + run logs)
+- Typed-URL navigation: click address bar -> type `google.com` -> Enter ->
+  address shows URL, tab retitled "Google", status shows page title,
+  consent page pixels rendered in-window (v25 screenshot + 61-key log).
+  Root cause of earlier failures found and fixed: GPUI key names are
+  lowercase (`enter`, `backspace`), not capitalized.
+- YouTube in-window: bookmark click navigates, full watch page renders in
+  the Lattice window (header, search, player fallback, recommendations,
+  status title). Video element shows the expected "can't play" fallback:
+  no media backend yet (M1 work, path scoped above).
+- Session restore: quit -> relaunch with no args restores tabs from
+  `session.json` (v26 screenshot: Google tab, address, status, pixels all
+  back). `history.json` verified on disk with titled visits.
+- Glass UI verified on-screen: frosted toolbar pills, rounded page card,
+  translucent panels over compositor blur.
+- Known annoyance: OS "Service Crash" notification on driver teardown
+  (no orderly Servo shutdown in 0.1.4; render always completes first).
