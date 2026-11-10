@@ -91,7 +91,13 @@ fn main() {
     let url = url::Url::parse(url_str).expect("valid URL");
     let (tx, rx) = std::sync::mpsc::channel::<()>();
 
+    let mut prefs = servo::Preferences::default();
+    if let Ok(ua) = std::env::var("LATTICE_UA") {
+        prefs.user_agent = ua;
+    }
+    println!("user_agent={}", prefs.user_agent);
     let servo = ServoBuilder::default()
+        .preferences(prefs)
         .event_loop_waker(Box::new(Waker { tx }))
         .build();
     servo.setup_logging();
