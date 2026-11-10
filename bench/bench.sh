@@ -22,7 +22,8 @@ if [ -x "$SPIKE" ]; then
   # GNU time comes from PATH (nix-shell -p time); /usr/bin/time is absent on NixOS.
   # stdbuf keeps spike stdout unbuffered so the segfault can't eat it.
   command -v time >/dev/null || { echo "need GNU time on PATH"; exit 1; }
-  time -v stdbuf -o0 -e0 "$SPIKE" "$URL" "$TIMEOUT" "$OUT_PNG" 2>&1 | grep -E "^(url|user_agent|title|status_text|status|frames|nonwhite|elapsed|pixels|.*Maximum resident|.*Elapsed)" || true
+  # `command time` forces the external GNU time (bash keyword has no -v).
+  command time -v stdbuf -o0 -e0 "$SPIKE" "$URL" "$TIMEOUT" "$OUT_PNG" 2>&1 | grep -E "^(url|user_agent|title|status_text|status|frames|nonwhite|elapsed|pixels|.*Maximum resident|.*Elapsed)" || true
   echo "png=$OUT_PNG"
 else
   echo "spike not built: $SPIKE"
