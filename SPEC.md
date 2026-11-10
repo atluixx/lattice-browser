@@ -219,3 +219,15 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Remaining video work: audibility (pipeline prerolls; no listening
   test), hardware decode (untouched), MSE (absent in Servo 0.1.4, so
   YouTube proper stays on the fallback), in-window playback screenshot.
+
+## Audio: attempted, fails at track setup (Nov 10/11)
+- flower.mp4 has H.264 video + AAC audio (ffprobe-verified).
+- With the union plugin set, video decodes and composites; on the audio
+  path Servo logs `Could not set audio track SetTrackFailed` from
+  `servo-media-gstreamer-0.1.4/player.rs::set_audio_track` (inner
+  `player.set_audio_track(stream_index)` errors). Video keeps playing.
+- Likely a stream-registration race or sink negotiation gap in the 0.1.4
+  media glue, not a missing codec (aacparse + avdec_aac verified
+  present via gst-inspect). Root-causing needs media-internals debugging
+  with rebuild cycles — queued behind idle time, not blocking visual
+  browsing or the MSE situation.
