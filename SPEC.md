@@ -231,3 +231,13 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   present via gst-inspect). Root-causing needs media-internals debugging
   with rebuild cycles — queued behind idle time, not blocking visual
   browsing or the MSE situation.
+
+## Tab switching: PROVEN in-window (Nov 11, j10/j11)
+- Two tabs open (example.com + Google); clicking the inactive
+  "Example Domain" pill swaps the entire view: active marker moves,
+  address bar + status + page pixels all switch to example.com content
+  while the Google tab keeps its title. Screenshots j10 (Google active)
+  and j11 (example active) form the before/after pair.
+- Coordinates learned the hard way: tab strip y~185, toolbar y~242,
+  address text y~290 at window (320,155); verify with a fresh screenshot
+  before clicking, windows move between runs.
