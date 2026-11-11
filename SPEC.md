@@ -265,3 +265,19 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Audio SetTrackFailed appears even in fully-working runs (video renders
   fine), so it is a benign script-side warning for now; audibility
   itself is still unverified (needs ears, idle session).
+
+## Memory: RELEASE dual-bench datum (Nov 11, do not cherry-pick)
+- Release `spike_dual` (Servo 0.1.4 + media, single process, YouTube
+  Complete + WhatsApp HeadParsed/still booting, 1280x800 x2, settle):
+  **peak 1,277,500 KB = 1.22 GiB**, 18.8s wall.
+- Passes the letter of the MVP target (<1.4GB), and is ~48% under the
+  original 2.37GB Firefox session that motivated the project.
+- BUT same-machine Firefox with just YouTube+WhatsApp measured ~903MB
+  in a later session. On a strict 2-site A/B today, Firefox wins;
+  Lattice does not demonstrate the 40-50% saving on the light workload.
+  The saving thesis now rests on scaling (many-tab sessions where
+  Firefox's per-process overhead dominates), which is UNMEASURED.
+- Honest status: rough parity on 2 heavy pages, possible win at scale,
+  no evidence yet. Next: measure 6-10 tab sessions on both, and try
+  cache caps + no-media builds as levers. No efficiency claim in any
+  user-facing copy until then.
