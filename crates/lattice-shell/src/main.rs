@@ -19,8 +19,10 @@ use lattice_core::history::{HistoryLog, data_file};
 use lattice_core::session::{Session, SessionTab};
 
 fn driver_binary() -> String {
-    std::env::var("LATTICE_DRIVER")
-        .unwrap_or_else(|_| "/tmp/lattice-servo-check2/debug/examples/spike_load".to_string())
+    std::env::var("LATTICE_DRIVER").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{home}/.local/bin/lattice-driver")
+    })
 }
 
 fn chrome_ua() -> String {
