@@ -18,7 +18,7 @@ use servo::{
     WheelMode,
 };
 use webrender_api::units::{
-    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
+    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePoint, DeviceVector2D,
 };
 
 pub use servo::LoadStatus;
