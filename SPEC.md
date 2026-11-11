@@ -281,3 +281,15 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
   no evidence yet. Next: measure 6-10 tab sessions on both, and try
   cache caps + no-media builds as levers. No efficiency claim in any
   user-facing copy until then.
+
+## Release build ships; YouTube bot wall moves (Nov 11)
+- Installed: release `lattice-shell` (28MB vs 533MB debug) + release
+  media `lattice-driver`, launcher sets GST plugin path. Release exits
+  cleanly (orderly GPUI teardown, no crash) when the window is closed.
+- First release render captured: YouTube served its **bot challenge**
+  ("Sign in to confirm you're not a bot") despite the Chrome UA.
+  Finding: YouTube fingerprints beyond the UA string (TLS/H2
+  fingerprint of hyper+rustls almost certainly). UA spoofing is
+  necessary but not sufficient; sometimes the full page loads, sometimes
+  the challenge. No client-side fix available to us — same class of
+  problem as MSE (upstream/environment).
