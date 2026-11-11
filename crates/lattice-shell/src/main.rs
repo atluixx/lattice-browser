@@ -383,30 +383,58 @@ impl Render for RootView {
         };
         let addr_focus = self.addr_focus.clone();
 
-        let mut tabbar = div().flex().flex_row().items_center().px_2().pt_2();
+        let mut tabs_col = div().flex().flex_col().gap_1();
+        tabs_col = tabs_col.child(
+            div()
+                .px_2()
+                .pt_1()
+                .text_xs()
+                .text_color(rgba(0xffffff66))
+                .child("TABS".to_string()),
+        );
         for (i, t) in self.tabs.iter().enumerate() {
             let label = short_title(&t.history[t.index], &t.title);
             let is_active = i == active;
-            tabbar = tabbar.child(btn(
-                1000 + i,
-                if is_active {
-                    format!("● {label}")
-                } else {
-                    format!("○ {label}")
-                },
-                is_active,
-                cx,
-                move |v, _, _, cx| {
-                    v.switch_tab(i);
-                    cx.notify();
-                },
-            ));
-            tabbar = tabbar.child(btn(2000 + i, "×".to_string(), false, cx, move |v, _, _, cx| {
-                v.close_tab(i);
-                cx.notify();
-            }));
+            let bg = if is_active {
+                rgba(0xffffff2e)
+            } else {
+                rgba(0xffffff0d)
+            };
+            tabs_col = tabs_col.child(
+                div()
+                    .id(1000 + i)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .px_3()
+                    .py_2()
+                    .rounded_xl()
+                    .bg(bg)
+                    .border_1()
+                    .border_color(rgba(0xffffff1f))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        eprintln!("UI click: tab {i}");
+                        v.switch_tab(i);
+                        cx.notify();
+                    }))
+                    .child(div().flex_1().child(label))
+                    .child(
+                        div()
+                            .id(2000 + i)
+                            .px_2()
+                            .rounded_full()
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |v, _, _, cx| {
+                                eprintln!("UI click: tab-close {i}");
+                                v.close_tab(i);
+                                cx.notify();
+                            }))
+                            .child("×".to_string()),
+                    ),
+            );
         }
-        tabbar = tabbar.child(btn("newtab", "+".to_string(), false, cx, move |v, _, _, cx| {
+        tabs_col = tabs_col.child(btn("newtab", "+ New Tab".to_string(), false, cx, move |v, _, _, cx| {
             let i = v.new_tab("https://example.com/".to_string());
             let url = v.tabs[i].history[0].clone();
             v.switch_tab(i);
@@ -414,17 +442,7 @@ impl Render for RootView {
             cx.notify();
         }));
 
-        let mut bar = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .px_3()
-            .py_2()
-            .m_2()
-            .rounded_2xl()
-            .bg(rgba(0x1e1e1ecc))
-            .border_1()
-            .border_color(rgba(0xffffff1f));
+        let mut bar = div().flex().flex_row().items_center().gap_1();
         bar = bar.child(btn("nav-back", if can_back { "◀" } else { "·" }.to_string(), false, cx, move |v, _, _, cx| {
             v.go_offset(-1);
             cx.notify();
@@ -439,21 +457,57 @@ impl Render for RootView {
             v.navigate(a, &url);
             cx.notify();
         }));
+        let mut marks = div().flex().flex_col().gap_1();
+        marks = marks.child(
+            div()
+                .px_2()
+                .pt_1()
+                .text_xs()
+                .text_color(rgba(0xffffff66))
+                .child("BOOKMARKS".to_string()),
+        );
         for &(name, url) in BOOKMARKS {
             let url = url.to_string();
-            bar = bar.child(btn(name, name.to_string(), false, cx, move |v, _, _, cx| {
-                let a = v.active;
-                v.navigate(a, &url);
-                cx.notify();
-            }));
+            let initial: String = name.chars().take(1).collect();
+            marks = marks.child(
+                div()
+                    .id(name)
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap_2()
+                    .px_2()
+                    .py_1()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |v, _, _, cx| {
+                        eprintln!("UI click: bookmark {name}");
+                        let a = v.active;
+                        v.navigate(a, &url);
+                        cx.notify();
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .w(px(24.0))
+                            .h(px(24.0))
+                            .rounded_full()
+                            .bg(rgba(0xffffff1f))
+                            .text_xs()
+                            .child(initial),
+                    )
+                    .child(name.to_string()),
+            );
         }
         let address = div()
             .id("address-bar")
             .flex_1()
             .px_3()
             .py_1()
-            .ml_1()
             .rounded_full()
+            .overflow_hidden()
             .bg(rgba(0x00000066))
             .border_1()
             .border_color(rgba(0xffffff14))
@@ -521,12 +575,40 @@ impl Render for RootView {
 
         div()
             .flex()
-            .flex_col()
+            .flex_row()
             .bg(rgba(0x00000000))
             .text_color(rgb(0xd4d4d4))
             .size_full()
             .p_2()
             .gap_2()
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .w(px(232.0))
+                    .p_3()
+                    .gap_2()
+                    .rounded_2xl()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(rgba(0xffffff29))
+                    .bg(rgba(0x1a1a1acc))
+                    .child(bar)
+                    .child(address)
+                    .child(marks)
+                    .child(tabs_col)
+                    .child(div().flex_1())
+                    .child(
+                        div()
+                            .px_2()
+                            .py_1()
+                            .rounded_lg()
+                            .bg(rgba(0x00000033))
+                            .text_xs()
+                            .overflow_hidden()
+                            .child(format!("{status}")),
+                    ),
+            )
             .child(
                 div()
                     .flex()
@@ -537,17 +619,6 @@ impl Render for RootView {
                     .border_1()
                     .border_color(rgba(0xffffff29))
                     .bg(rgba(0x141414e6))
-                    .child(tabbar)
-                    .child(bar)
-                    .child(address)
-                    .child(
-                        div()
-                            .px_3()
-                            .py_1()
-                            .bg(rgba(0x00000033))
-                            .text_xs()
-                            .child(format!("{status}")),
-                    )
                     .child(
                         div()
                             .flex_1()
