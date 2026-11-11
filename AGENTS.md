@@ -28,6 +28,9 @@ Efficiency-first: no UI cost without idle RAM/CPU neutrality.
   `nix-shell -p ...` with channel packages.
 - Servo crates: `cargo check -p lattice-embed --features servo-embed`.
   Shell with Servo: `cargo check -p lattice-shell --features servo`.
+- Shell-only builds (no Servo) also need `libxcb` in the shell set or the
+  final link fails (`rust-lld: unable to find library -lxcb`):
+  `nix-shell -p gcc pkg-config openssl wayland libxkbcommon libx11 libxcb fontconfig freetype ...`.
 - Never run two `cargo` commands on the same target dir concurrently
   (lock contention). Use `CARGO_TARGET_DIR=/tmp/<name>` to isolate.
 
