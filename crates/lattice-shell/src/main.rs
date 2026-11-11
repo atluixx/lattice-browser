@@ -11,7 +11,11 @@
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 
 use gpui::*;
@@ -211,12 +215,48 @@ struct Tab {
     index: usize,
     title: Option<String>,
     status: String,
-    frame: Option<PathBuf>,
+    /// Live texture for the page. Decoded off the UI thread (see below);
+    /// a stable source means GPUI never shows a reload gap between frames,
+    /// which is what made the window flash.
+    tex: Arc<Mutex<Option<Arc<RenderImage>>>>,
+    tex_dirty: Arc<AtomicBool>,
+    /// Set once the first decoded frame lands; gates img vs placeholder.
+    live: bool,
+    frame_tx: Option<Sender<PathBuf>>,
     favicon: Option<PathBuf>,
     driver: Option<Driver>,
     ev_rx: Option<Receiver<DriverEvent>>,
     addr: String,
     editing: bool,
+}
+
+/// Spawn the per-tab loader thread: PNG path in, decoded texture out.
+/// PNG decode of a 1280x800 frame is tens of ms — far too slow for the
+/// UI thread at streaming rates.
+fn spawn_loader(
+    tex: Arc<Mutex<Option<Arc<RenderImage>>>>,
+    dirty: Arc<AtomicBool>,
+    rx: Receiver<PathBuf>,
+) {
+    std::thread::spawn(move || {
+        for path in rx {
+            let Ok(img) = image::open(&path) else {
+                continue;
+            };
+            let rgba = img.to_rgba8();
+            let (w, h) = (rgba.width(), rgba.height());
+            let mut px = rgba.into_raw();
+            // RGBA -> BGRA for RenderImage.
+            for chunk in px.chunks_exact_mut(4) {
+                chunk.swap(0, 2);
+            }
+            if let Some(buf) = image::RgbaImage::from_raw(w, h, px) {
+                let render = RenderImage::new(vec![image::Frame::new(buf)]);
+                *tex.lock().unwrap() = Some(Arc::new(render));
+                dirty.store(true, Ordering::Release);
+            }
+        }
+    });
 }
 
 struct RootView {
@@ -272,12 +312,19 @@ impl RootView {
     fn new_tab(&mut self, url: String) -> usize {
         let id = self.next_id;
         self.next_id += 1;
+        let tex = Arc::new(Mutex::new(None));
+        let dirty = Arc::new(AtomicBool::new(false));
+        let (frame_tx, frame_rx) = channel::<PathBuf>();
+        spawn_loader(tex.clone(), dirty.clone(), frame_rx);
         self.tabs.push(Tab {
             history: vec![url.clone()],
             index: 0,
             title: None,
             status: format!("loading {url} …"),
-            frame: None,
+            tex,
+            tex_dirty: dirty,
+            live: false,
+            frame_tx: Some(frame_tx),
             favicon: None,
             driver: None,
             ev_rx: None,
@@ -299,7 +346,13 @@ impl RootView {
         }
         {
             let t = &mut self.tabs[tab];
-            t.frame = None;
+            t.frame_tx = None;
+            t.tex = Arc::new(Mutex::new(None));
+            t.tex_dirty = Arc::new(AtomicBool::new(false));
+            let (frame_tx, frame_rx) = channel::<PathBuf>();
+            spawn_loader(t.tex.clone(), t.tex_dirty.clone(), frame_rx);
+            t.frame_tx = Some(frame_tx);
+            t.live = false;
             t.title = None;
             t.status = format!("loading {url} …");
             t.addr = url.to_string();
@@ -433,8 +486,11 @@ impl RootView {
                     if path.as_os_str().is_empty() {
                         continue;
                     }
-                    tab.frame = Some(path);
-                    frame_changed = true;
+                    // Hand PNG bytes to the loader thread; the UI thread
+                    // never decodes. Freshness is signaled via tex_dirty.
+                    if let Some(tx) = tab.frame_tx.as_ref() {
+                        let _ = tx.send(path);
+                    }
                 }
                 DriverEvent::Favicon(path) => {
                     if path.as_os_str().is_empty() {
@@ -444,6 +500,18 @@ impl RootView {
                     meta_changed = true;
                 }
                 DriverEvent::Bye => {}
+            }
+        }
+        // Freshly decoded textures surface here, not in the event
+        // loop above: the loader thread flips tex_dirty when pixels land.
+        for tab in self.tabs.iter_mut() {
+            if tab
+                .tex_dirty
+                .compare_exchange(true, false, Ordering::Release, Ordering::Relaxed)
+                .is_ok()
+            {
+                tab.live = true;
+                frame_changed = true;
             }
         }
         if meta_changed {
@@ -711,15 +779,25 @@ impl Render for RootView {
             }))
             .child(addr_text);
 
-        let page: AnyElement = match self.tabs[active].frame.clone() {
-            Some(p) => img(p).into_any_element(),
-            None => div()
+        // Stable live texture: the same source object across frames, so
+        // GPUI never shows a reload gap (the old file-per-frame path
+        // flashed on every update). Pixels arrive via the loader thread.
+        let page: AnyElement = if self.tabs[active].live {
+            let slot = self.tabs[active].tex.clone();
+            img(ImageSource::Custom(Arc::new(
+                move |_window: &mut Window, _cx: &mut App| {
+                    slot.lock().unwrap().clone().map(Ok)
+                },
+            )))
+            .into_any_element()
+        } else {
+            div()
                 .flex()
                 .items_center()
                 .justify_center()
                 .size_full()
                 .child("rendering…")
-                .into_any_element(),
+                .into_any_element()
         };
 
         div()
