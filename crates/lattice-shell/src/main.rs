@@ -155,9 +155,22 @@ impl Driver {
         let _ = writeln!(self.stdin, "{line}");
     }
 
-    fn stop(&mut self) {
+    /// Orderly quit that never blocks the UI thread: the old blocking
+    /// `wait()` froze the whole window when a driver hung in Servo layout.
+    fn stop_async(mut self) {
         self.send(r#"{"cmd":"quit"}"#);
-        let _ = self.child.wait();
+        let _ = self.child.kill();
+        std::thread::spawn(move || {
+            let _ = self.child.wait();
+        });
+    }
+
+    /// Same as above but without the quit handshake (hung driver).
+    fn kill_now(mut self) {
+        let _ = self.child.kill();
+        std::thread::spawn(move || {
+            let _ = self.child.wait();
+        });
     }
 }
 
@@ -223,6 +236,11 @@ struct Tab {
     /// Set once the first decoded frame lands; gates img vs placeholder.
     live: bool,
     frame_tx: Option<Sender<PathBuf>>,
+    /// True while a load is outstanding; cleared on Load(Complete).
+    /// Used by the watchdog below.
+    loading: bool,
+    /// Last time this tab made any progress (event or frame).
+    last_progress: std::time::Instant,
     favicon: Option<PathBuf>,
     driver: Option<Driver>,
     ev_rx: Option<Receiver<DriverEvent>>,
@@ -252,7 +270,9 @@ fn spawn_loader(
             }
             if let Some(buf) = image::RgbaImage::from_raw(w, h, px) {
                 let render = RenderImage::new(vec![image::Frame::new(buf)]);
-                *tex.lock().unwrap() = Some(Arc::new(render));
+                // Poison-safe: a previous loader panic must never freeze
+                // the UI thread on this mutex.
+                *tex.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(render));
                 dirty.store(true, Ordering::Release);
             }
         }
@@ -309,6 +329,26 @@ impl RootView {
         }
     }
 
+    /// Watchdog respawn: kill the dead/stalled driver without blocking
+    /// the UI thread, spawn a fresh one, and resend the current URL.
+    /// The loader thread and live texture are kept — new frames flow
+    /// into the same stable surface.
+    fn respawn_tab_driver(&mut self, idx: usize, reason: &str) {
+        if let Some(d) = self.tabs[idx].driver.take() {
+            eprintln!(
+                "UI watchdog: respawning tab {} driver ({reason})",
+                self.tabs[idx].id
+            );
+            d.kill_now();
+        }
+        self.tabs[idx].ev_rx = None;
+        let url = self.tabs[idx].history[self.tabs[idx].index].clone();
+        self.tabs[idx].status = format!("reloading {url} …");
+        self.spawn_tab_driver(idx, &url);
+        self.tabs[idx].loading = true;
+        self.tabs[idx].last_progress = std::time::Instant::now();
+    }
+
     fn new_tab(&mut self, url: String) -> usize {
         let id = self.next_id;
         self.next_id += 1;
@@ -324,6 +364,8 @@ impl RootView {
             tex,
             tex_dirty: dirty,
             live: false,
+            loading: true,
+            last_progress: std::time::Instant::now(),
             frame_tx: Some(frame_tx),
             favicon: None,
             driver: None,
@@ -358,6 +400,8 @@ impl RootView {
             t.addr = url.to_string();
             t.editing = false;
             t.favicon = None;
+            t.loading = true;
+            t.last_progress = std::time::Instant::now();
         }
         let cmd = serde_json::json!({"cmd":"navigate","url":url}).to_string();
         if let Some(d) = self.tabs[tab].driver.as_mut() {
@@ -399,10 +443,10 @@ impl RootView {
             return;
         }
         let mut tab = self.tabs.remove(idx);
-        if let Some(mut d) = tab.driver.take() {
-            d.stop();
-            let _ = d.child.kill();
-            let _ = d.child.wait();
+        if let Some(d) = tab.driver.take() {
+            // Async: the old blocking wait() here froze the window when
+            // a driver hung. Reaped on a background thread instead.
+            d.stop_async();
         }
         let _ = std::fs::remove_dir_all(tab_outdir(tab.id));
         if self.tabs.is_empty() {
@@ -451,6 +495,12 @@ impl RootView {
             let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
                 continue;
             };
+            // Any driver event is progress; the watchdog only fires when
+            // a load is outstanding AND nothing arrives for the timeout.
+            // (Bye is terminal, not progress.)
+            if !matches!(ev, DriverEvent::Bye) {
+                tab.last_progress = std::time::Instant::now();
+            }
             match ev {
                 DriverEvent::Title(title) => {
                     if let Some(title) = title {
@@ -464,6 +514,7 @@ impl RootView {
                 }
                 DriverEvent::Load(state) => {
                     if state == "Complete" {
+                        tab.loading = false;
                         meta_changed = true;
                     }
                 }
@@ -511,8 +562,33 @@ impl RootView {
                 .is_ok()
             {
                 tab.live = true;
+                tab.last_progress = std::time::Instant::now();
                 frame_changed = true;
             }
+        }
+        // Watchdog: a tab whose driver died, or whose load produced
+        // nothing for the timeout, is respawned instead of frozen.
+        // SIGSTOP'd background tabs report Ok(None) from try_wait, so
+        // they are never mistaken for dead.
+        const WATCHDOG_TIMEOUT: Duration = Duration::from_secs(45);
+        let now = std::time::Instant::now();
+        let mut stalled: Vec<(usize, &'static str)> = Vec::new();
+        for (i, tab) in self.tabs.iter_mut().enumerate() {
+            let dead = tab
+                .driver
+                .as_mut()
+                .map(|d| d.child.try_wait().ok().flatten().is_some())
+                .unwrap_or(false);
+            if dead {
+                stalled.push((i, "driver exited"));
+            } else if tab.loading && now.duration_since(tab.last_progress) > WATCHDOG_TIMEOUT
+            {
+                stalled.push((i, "load stalled"));
+            }
+        }
+        for (i, reason) in stalled {
+            self.respawn_tab_driver(i, reason);
+            meta_changed = true;
         }
         if meta_changed {
             // Retitle the newest untitled visit for any tab that got a title.
@@ -786,9 +862,16 @@ impl Render for RootView {
             let slot = self.tabs[active].tex.clone();
             img(ImageSource::Custom(Arc::new(
                 move |_window: &mut Window, _cx: &mut App| {
-                    slot.lock().unwrap().clone().map(Ok)
+                    // Poison-safe: a loader panic must degrade to a blank
+                    // frame, never take down the paint pass with it.
+                    slot.lock().unwrap_or_else(|e| e.into_inner()).clone().map(Ok)
                 },
             )))
+            // Fill the page box on any window size (Contain keeps aspect);
+            // without this a maximized window left container background
+            // showing as a black region beside the fixed-size image.
+            .w_full()
+            .h_full()
             .into_any_element()
         } else {
             div()
@@ -915,6 +998,9 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_background: WindowBackgroundAppearance::Transparent,
+                // Calibrated geometry assumes at least this size; smaller
+                // windows broke click mapping and left black regions.
+                window_min_size: Some(size(px(900.0), px(600.0))),
                 ..Default::default()
             },
             {
