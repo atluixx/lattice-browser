@@ -250,3 +250,18 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - This also validates the unique-frame-path fix: before it, switched
   tabs showed stale all-white frames from GPUI's path-keyed image cache;
   after it, both tabs render their own content.
+
+## Upstream blockers, verified Nov 11 (no build needed)
+- MSE: ABSENT even on Servo main (components/script/dom/media has no
+  mediasource/sourcebuffer files; 0.1.4 identical). YouTube playback is
+  blocked upstream, not by our wiring. Options: (a) accept fallback-only
+  YouTube, (b) track Servo MSE development, (c) never implement MSE
+  ourselves (enormous). Recommendation: (a) + (b).
+- Single-binary link: monthly Servo (0.8.x) uses stylo 0.23 vs LTS 0.15,
+  so the rustc-1.99 ToCss-derive failure likely disappears on upgrade.
+  Trade-off: monthly API churn + rebuild everything vs LTS stability.
+  Decision needed from you before any attempt; two-process remains the
+  shipping shape either way.
+- Audio SetTrackFailed appears even in fully-working runs (video renders
+  fine), so it is a benign script-side warning for now; audibility
+  itself is still unverified (needs ears, idle session).
