@@ -68,6 +68,20 @@ fn main() {
     println!("nonwhite_sample10={best_nonwhite}");
     println!("elapsed_ms={}", start.elapsed().as_millis());
     println!("pixels={saved} {dims:?} -> {out_png}");
+    let favicon_path = out_png
+        .strip_suffix(".png")
+        .map(|s| format!("{s}-favicon.png"))
+        .unwrap_or_else(|| format!("{out_png}.favicon.png"));
+    match page.favicon_image() {
+        Some(icon) => match icon.save(&favicon_path) {
+            Ok(()) => println!("favicon={favicon_path}"),
+            Err(e) => {
+                eprintln!("favicon save failed: {e}");
+                println!("favicon=none");
+            }
+        },
+        None => println!("favicon=none"),
+    }
 
     if report.status == lattice_embed::headless::LoadStatus::Complete {
         std::process::exit(0);
