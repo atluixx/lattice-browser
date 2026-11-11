@@ -8,22 +8,15 @@
 //! Session (open tabs + active) and visit history persist as JSON under
 //! ~/.local/share/lattice/.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use gpui::*;
 use lattice_core::history::{HistoryLog, data_file};
 use lattice_core::session::{Session, SessionTab};
-
-fn driver_binary() -> String {
-    std::env::var("LATTICE_DRIVER").unwrap_or_else(|_| {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{home}/.local/bin/lattice-driver")
-    })
-}
 
 fn chrome_ua() -> String {
     std::env::var("LATTICE_UA").unwrap_or_else(|_| {
@@ -32,49 +25,140 @@ fn chrome_ua() -> String {
     })
 }
 
-fn tab_png(id: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("lattice-page-{id}.png"))
-}
+/// Geometry mapping for input forwarding, in window pixels at scale 1.
+///
+/// GPUI 0.2.2 offers no element-bounds query for listeners, so the page
+/// origin is a calibrated constant for the fixed v0.5 layout (232px
+/// sidebar + 8px gaps + 1px frame borders). It is verified by screenshot
+/// click tests; a window resize breaks it until the resize command path
+/// is wired (the driver already accepts `resize`).
+/// Displayed image is object-fit Contain of the 1280x800 render.
+const DRIVER_W: u32 = 1280;
+const DRIVER_H: u32 = 800;
+const PAGE_ORIGIN_X: f32 = 250.0;
+const PAGE_ORIGIN_Y: f32 = 9.0;
+const PAGE_BOX_W: f32 = 1021.0;
+const PAGE_BOX_H: f32 = 773.0;
 
-fn frame_png(id: u64, nav: u64, seq: u64) -> PathBuf {
-    std::env::temp_dir().join(format!("lattice-frame-{id}-{nav}-{seq}.png"))
-}
-
-/// Spawn the Servo driver for `url`, rendering to `out_png`.
-/// Returns the child and a title-line receiver.
-fn spawn_driver(url: &str, out_png: &PathBuf) -> (Child, Receiver<String>) {
-    let _ = std::fs::remove_file(out_png);
-    let err_stdio = match std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open("/tmp/opencode/lattice-driver-stderr.log")
-    {
-        Ok(f) => Stdio::from(f),
-        Err(_) => Stdio::null(),
-    };
-    let mut child = Command::new(driver_binary())
-        .args([url, &"60".to_string(), &out_png.display().to_string()])
-        .env("LATTICE_UA", chrome_ua())
-        .stdout(Stdio::piped())
-        .stderr(err_stdio)
-        .spawn()
-        .expect("spawn driver");
-    let (tx, rx) = channel();
-    if let Some(stdout) = child.stdout.take() {
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if line.starts_with("title=") {
-                    let _ = tx.send(line);
-                }
-            }
-        });
+/// Map a window-relative point into render pixels, or None if outside.
+fn window_to_page(x: f32, y: f32) -> Option<(f32, f32)> {
+    let scale = (PAGE_BOX_W / DRIVER_W as f32).min(PAGE_BOX_H / DRIVER_H as f32);
+    let dw = DRIVER_W as f32 * scale;
+    let dh = DRIVER_H as f32 * scale;
+    let ox = PAGE_ORIGIN_X + (PAGE_BOX_W - dw) / 2.0;
+    let oy = PAGE_ORIGIN_Y + (PAGE_BOX_H - dh) / 2.0;
+    let px = (x - ox) / scale;
+    let py = (y - oy) / scale;
+    if px >= 0.0 && py >= 0.0 && px < DRIVER_W as f32 && py < DRIVER_H as f32 {
+        Some((px, py))
+    } else {
+        None
     }
-    (child, rx)
+}
+
+fn driver_binary() -> String {
+    std::env::var("LATTICE_DRIVER").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{home}/.local/bin/lattice-driver")
+    })
+}
+
+fn tab_outdir(id: u64) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("lattice-tab-{id}"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+#[derive(Debug)]
+enum DriverEvent {
+    Title(Option<String>),
+    Load(String),
+    Url(String),
+    Frame(PathBuf),
+    Favicon(PathBuf),
+    Bye,
+}
+
+/// One persistent Servo renderer. Speaks the lattice-driver JSON protocol.
+struct Driver {
+    child: Child,
+    stdin: ChildStdin,
+    _outdir: PathBuf,
+}
+
+impl Driver {
+    fn spawn(url: &str, outdir: &PathBuf) -> Option<(Self, Receiver<DriverEvent>)> {
+        let _ = std::fs::create_dir_all(outdir);
+        let err_stdio = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open("/tmp/opencode/lattice-driver-stderr.log")
+        {
+            Ok(f) => Stdio::from(f),
+            Err(_) => Stdio::null(),
+        };
+        let mut child = Command::new(driver_binary())
+            .args([
+                &outdir.display().to_string(),
+                &DRIVER_W.to_string(),
+                &DRIVER_H.to_string(),
+                url,
+            ])
+            .env("LATTICE_UA", chrome_ua())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(err_stdio)
+            .spawn()
+            .ok()?;
+        let stdin = child.stdin.take()?;
+        let (tx, rx) = channel();
+        if let Some(stdout) = child.stdout.take() {
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    let v: serde_json::Value = match serde_json::from_str(&line) {
+                        Ok(v) => v,
+                        Err(_) => continue,
+                    };
+                    let ev = match v.get("ev").and_then(|e| e.as_str()) {
+                        Some("title") => DriverEvent::Title(
+                            v.get("title").and_then(|t| t.as_str()).map(|s| s.to_string()),
+                        ),
+                        Some("load") => DriverEvent::Load(
+                            v.get("state").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                        ),
+                        Some("url") => DriverEvent::Url(
+                            v.get("url").and_then(|s| s.as_str()).unwrap_or("").to_string(),
+                        ),
+                        Some("frame") => DriverEvent::Frame(PathBuf::from(
+                            v.get("path").and_then(|s| s.as_str()).unwrap_or(""),
+                        )),
+                        Some("favicon") => DriverEvent::Favicon(PathBuf::from(
+                            v.get("path").and_then(|s| s.as_str()).unwrap_or(""),
+                        )),
+                        Some("bye") => DriverEvent::Bye,
+                        _ => continue,
+                    };
+                    if tx.send(ev).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Some((Self { child, stdin, _outdir: outdir.clone() }, rx))
+    }
+
+    fn send(&mut self, line: &str) {
+        let _ = writeln!(self.stdin, "{line}");
+    }
+
+    fn stop(&mut self) {
+        self.send(r#"{"cmd":"quit"}"#);
+        let _ = self.child.wait();
+    }
 }
 
 fn stop_child(child: &Child) {
-    // SIGSTOP the whole driver tree state: zero CPU, pageable out.
-    // Best effort; the Child handle keeps it reaped later via wait().
+    // SIGSTOP a live driver: zero CPU, pageable out. Best effort.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGSTOP);
     }
@@ -128,12 +212,9 @@ struct Tab {
     title: Option<String>,
     status: String,
     frame: Option<PathBuf>,
-    driver: Option<Child>,
-    title_rx: Option<Receiver<String>>,
-    png: PathBuf,
-    nav_id: u64,
-    frame_seq: u64,
-    last_mtime: Option<std::time::SystemTime>,
+    favicon: Option<PathBuf>,
+    driver: Option<Driver>,
+    ev_rx: Option<Receiver<DriverEvent>>,
     addr: String,
     editing: bool,
 }
@@ -170,6 +251,19 @@ impl RootView {
         self.history_log.save(&data_file("history.json"));
     }
 
+    fn spawn_tab_driver(&mut self, idx: usize, url: &str) {
+        let outdir = tab_outdir(self.tabs[idx].id);
+        match Driver::spawn(url, &outdir) {
+            Some((driver, rx)) => {
+                self.tabs[idx].driver = Some(driver);
+                self.tabs[idx].ev_rx = Some(rx);
+            }
+            None => {
+                self.tabs[idx].status = "driver failed to start".to_string();
+            }
+        }
+    }
+
     fn new_tab(&mut self, url: String) -> usize {
         let id = self.next_id;
         self.next_id += 1;
@@ -179,17 +273,16 @@ impl RootView {
             title: None,
             status: format!("loading {url} …"),
             frame: None,
+            favicon: None,
             driver: None,
-            title_rx: None,
-            png: tab_png(id),
-            nav_id: 0,
-            frame_seq: 0,
-            last_mtime: None,
+            ev_rx: None,
             addr: url.clone(),
             editing: false,
             id,
         });
-        self.tabs.len() - 1
+        let idx = self.tabs.len() - 1;
+        self.spawn_tab_driver(idx, &url);
+        idx
     }
 
     fn navigate(&mut self, tab: usize, url: &str) {
@@ -201,21 +294,19 @@ impl RootView {
         }
         {
             let t = &mut self.tabs[tab];
-            if let Some(mut child) = t.driver.take() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
             t.frame = None;
             t.title = None;
             t.status = format!("loading {url} …");
             t.addr = url.to_string();
             t.editing = false;
-            t.last_mtime = None;
-            t.nav_id += 1;
-            t.frame_seq = 0;
-            let (child, title_rx) = spawn_driver(url, &t.png.clone());
-            t.driver = Some(child);
-            t.title_rx = Some(title_rx);
+            t.favicon = None;
+        }
+        let cmd = serde_json::json!({"cmd":"navigate","url":url}).to_string();
+        if let Some(d) = self.tabs[tab].driver.as_mut() {
+            d.send(&cmd);
+        } else {
+            let url = url.to_string();
+            self.spawn_tab_driver(tab, &url);
         }
         self.history_log.push(url);
         self.save_session();
@@ -236,11 +327,11 @@ impl RootView {
             return;
         }
         if let Some(old) = self.tabs[self.active].driver.as_ref() {
-            stop_child(old);
+            stop_child(&old.child);
         }
         self.active = idx;
         if let Some(new) = self.tabs[self.active].driver.as_ref() {
-            cont_child(new);
+            cont_child(&new.child);
         }
         self.save_session();
     }
@@ -250,16 +341,15 @@ impl RootView {
             return;
         }
         let mut tab = self.tabs.remove(idx);
-        if let Some(mut child) = tab.driver.take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        if let Some(mut d) = tab.driver.take() {
+            d.stop();
+            let _ = d.child.kill();
+            let _ = d.child.wait();
         }
-        let _ = std::fs::remove_file(&tab.png);
+        let _ = std::fs::remove_dir_all(tab_outdir(tab.id));
         if self.tabs.is_empty() {
             let i = self.new_tab("https://example.com/".to_string());
             self.active = i;
-            let url = self.tabs[i].history[0].clone();
-            self.navigate(i, &url);
             return;
         }
         if self.active >= self.tabs.len() {
@@ -268,7 +358,7 @@ impl RootView {
             self.active -= 1;
         }
         if let Some(cur) = self.tabs[self.active].driver.as_ref() {
-            cont_child(cur);
+            cont_child(&cur.child);
         }
         self.save_session();
     }
@@ -289,41 +379,65 @@ impl RootView {
     /// owns the loop).
     fn poll(&mut self, cx: &mut Context<Self>) -> bool {
         let mut changed = false;
-        for tab in self.tabs.iter_mut() {
-            if let Some(rx) = tab.title_rx.as_ref() {
-                while let Ok(line) = rx.try_recv() {
-                    let title = line.strip_prefix("title=").unwrap_or(&line);
-                    if !title.is_empty() {
-                        tab.title = Some(title.to_string());
-                        tab.status =
-                            format!("{} — {title}", tab.history[tab.index]);
-                        changed = true;
-                    }
+        // Collect events first (borrow ends before mutation below).
+        let mut pending: Vec<(u64, DriverEvent)> = Vec::new();
+        for tab in self.tabs.iter() {
+            if let Some(rx) = tab.ev_rx.as_ref() {
+                while let Ok(ev) = rx.try_recv() {
+                    pending.push((tab.id, ev));
                 }
             }
         }
-        // Only the active tab's pixels are composited.
-        let active = self.active;
-        if let Some(tab) = self.tabs.get_mut(active) {
-            if let Ok(mtime) = std::fs::metadata(&tab.png).and_then(|m| m.modified()) {
-                if Some(mtime) != tab.last_mtime {
-                    // Unique path per copy: GPUI caches images by path, so
-                    // reusing one path would freeze the first frame.
-                    tab.frame_seq += 1;
-                    let cached = frame_png(tab.id, tab.nav_id, tab.frame_seq);
-                    if tab.frame_seq > 1 {
-                        let _ = std::fs::remove_file(frame_png(
-                            tab.id,
-                            tab.nav_id,
-                            tab.frame_seq - 1,
-                        ));
+        for (id, ev) in pending {
+            let Some(tab) = self.tabs.iter_mut().find(|t| t.id == id) else {
+                continue;
+            };
+            match ev {
+                DriverEvent::Title(title) => {
+                    if let Some(title) = title {
+                        if !title.is_empty() {
+                            let url = tab.history[tab.index].clone();
+                            tab.title = Some(title.clone());
+                            tab.status = format!("{url} — {title}");
+                            changed = true;
+                        }
                     }
-                    if std::fs::copy(&tab.png, &cached).is_ok() {
-                        tab.frame = Some(cached);
+                }
+                DriverEvent::Load(state) => {
+                    if state == "Complete" {
                         changed = true;
                     }
-                    tab.last_mtime = Some(mtime);
                 }
+                DriverEvent::Url(url) => {
+                    if url.is_empty() {
+                        continue;
+                    }
+                    if tab.history.get(tab.index).map(|s| s.as_str()) != Some(url.as_str()) {
+                        tab.history.truncate(tab.index + 1);
+                        tab.history.push(url.clone());
+                        tab.index = tab.history.len() - 1;
+                        self.history_log.push(&url);
+                    }
+                    if !tab.editing {
+                        tab.addr = url;
+                    }
+                    changed = true;
+                }
+                DriverEvent::Frame(path) => {
+                    if path.as_os_str().is_empty() {
+                        continue;
+                    }
+                    tab.frame = Some(path);
+                    changed = true;
+                }
+                DriverEvent::Favicon(path) => {
+                    if path.as_os_str().is_empty() {
+                        continue;
+                    }
+                    tab.favicon = Some(path);
+                    changed = true;
+                }
+                DriverEvent::Bye => {}
             }
         }
         if changed {
@@ -404,6 +518,15 @@ impl Render for RootView {
         for (i, t) in self.tabs.iter().enumerate() {
             let label = short_title(&t.history[t.index], &t.title);
             let is_active = i == active;
+            let icon: AnyElement = match t.favicon.clone() {
+                Some(p) => img(p)
+                    .w(px(16.0))
+                    .h(px(16.0))
+                    .rounded_md()
+                    .overflow_hidden()
+                    .into_any_element(),
+                None => div().into_any_element(),
+            };
             let bg = if is_active {
                 rgba(0xffffff2e)
             } else {
@@ -427,6 +550,7 @@ impl Render for RootView {
                         v.switch_tab(i);
                         cx.notify();
                     }))
+                    .child(icon)
                     .child(div().flex_1().child(label))
                     .child(
                         div()
@@ -445,9 +569,7 @@ impl Render for RootView {
         }
         tabs_col = tabs_col.child(btn("newtab", "+ New Tab".to_string(), false, cx, move |v, _, _, cx| {
             let i = v.new_tab("https://example.com/".to_string());
-            let url = v.tabs[i].history[0].clone();
             v.switch_tab(i);
-            v.navigate(i, &url);
             cx.notify();
         }));
 
@@ -635,6 +757,7 @@ impl Render for RootView {
                     .bg(rgba(0x141414e6))
                     .child(
                         div()
+                            .id("page-view")
                             .flex_1()
                             .m_2()
                             .rounded_xl()
@@ -642,6 +765,47 @@ impl Render for RootView {
                             .border_1()
                             .border_color(rgba(0xffffff14))
                             .bg(rgba(0x0a0a0af2))
+                            .on_scroll_wheel(cx.listener(
+                                |view, ev: &ScrollWheelEvent, _, _| {
+                                    let (dx, dy) = match ev.delta {
+                                        ScrollDelta::Pixels(p) => {
+                                            (f64::from(p.x), f64::from(p.y))
+                                        }
+                                        ScrollDelta::Lines(p) => (p.x as f64 * 20.0, p.y as f64 * 20.0),
+                                    };
+                                    // Scroll position barely matters; use
+                                    // the viewport center.
+                                    let cmd = serde_json::json!({
+                                        "cmd": "scroll",
+                                        "dx": -dx,
+                                        "dy": -dy,
+                                        "x": DRIVER_W as f32 / 2.0,
+                                        "y": DRIVER_H as f32 / 2.0,
+                                    })
+                                    .to_string();
+                                    let a = view.active;
+                                    if let Some(d) = view.tabs.get_mut(a).and_then(|t| t.driver.as_mut()) {
+                                        d.send(&cmd);
+                                    }
+                                },
+                            ))
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(|view, ev: &MouseDownEvent, _, _| {
+                                    let p = ev.position;
+                                    if let Some((x, y)) =
+                                        window_to_page(f32::from(p.x), f32::from(p.y))
+                                    {
+                                        eprintln!("UI page click {x:.0},{y:.0}");
+                                        let cmd = serde_json::json!({"cmd":"click","x":x,"y":y})
+                                            .to_string();
+                                        let a = view.active;
+                                        if let Some(d) = view.tabs.get_mut(a).and_then(|t| t.driver.as_mut()) {
+                                            d.send(&cmd);
+                                        }
+                                    }
+                                }),
+                            )
                             .child(page),
                     ),
             )
@@ -699,21 +863,20 @@ fn main() {
                         if !restored {
                             view.new_tab(start_url.clone());
                         }
-                        // Clamp active and start drivers: only the active
-                        // tab renders; the rest start stopped.
+                        // Clamp active and spawn one persistent driver per
+                        // tab; only the active tab renders, the rest
+                        // start stopped.
                         if view.active >= view.tabs.len() {
                             view.active = 0;
                         }
-                        let ids: Vec<u64> = view.tabs.iter().map(|t| t.id).collect();
-                        for (i, id) in ids.iter().enumerate() {
+                        for i in 0..view.tabs.len() {
                             let url = view.tabs[i].history[0].clone();
-                            view.navigate(i, &url);
+                            view.spawn_tab_driver(i, &url);
                             if i != view.active {
                                 if let Some(c) = view.tabs[i].driver.as_ref() {
-                                    stop_child(c);
+                                    stop_child(&c.child);
                                 }
                             }
-                            let _ = id;
                         }
                         // Pump loop: titles, PNGs, and session saves.
                         let task = cx.spawn(async move |view, cx| loop {
