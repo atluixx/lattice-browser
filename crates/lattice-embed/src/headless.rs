@@ -12,10 +12,14 @@ use std::time::{Duration, Instant};
 
 use dpi::PhysicalSize;
 use servo::{
-    EventLoopWaker, RenderingContext, Servo, ServoBuilder, SoftwareRenderingContext, WebView,
-    WebViewBuilder, WebViewDelegate,
+    EventLoopWaker, InputEvent, MouseButton, MouseButtonAction, MouseButtonEvent,
+    RenderingContext, Scroll, Servo, ServoBuilder, SoftwareRenderingContext, WebView,
+    WebViewBuilder, WebViewDelegate, WebViewPoint, WebViewVector, WheelDelta, WheelEvent,
+    WheelMode,
 };
-use webrender_api::units::{DeviceIntPoint, DeviceIntRect, DeviceIntSize};
+use webrender_api::units::{
+    DeviceIntPoint, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, DeviceVector2D,
+};
 
 pub use servo::LoadStatus;
 
@@ -134,6 +138,17 @@ impl HeadlessSession {
         self.servo.spin_event_loop();
     }
 
+    /// One spin pass, for drivers that multiplex stdin with the event loop.
+    pub fn spin(&self) {
+        self.servo.spin_event_loop();
+    }
+
+    /// Poll the waker channel with a timeout (lets a driver loop watch
+    /// stdin and Servo wakeups together).
+    pub fn wait_wake(&self, wait: Duration) {
+        let _ = self.rx.recv_timeout(wait);
+    }
+
     /// Spin until every page reports Complete or the timeout hits.
     pub fn pump_until_complete(&self, pages: &[HeadlessPage], timeout: Duration) {
         let start = Instant::now();
@@ -173,6 +188,113 @@ impl HeadlessPage {
             status_text: self.delegate.status_text.borrow().clone(),
             status: self.delegate.status.get(),
             frames: self.delegate.frames.get(),
+        }
+    }
+
+    pub fn frames(&self) -> u32 {
+        self.delegate.frames.get()
+    }
+
+    pub fn load(&self, url: &str) {
+        if let Ok(url) = url::Url::parse(url) {
+            self.webview.load(url);
+        }
+    }
+
+    pub fn reload(&self) {
+        self.webview.reload();
+    }
+
+    pub fn go_back(&self) {
+        self.webview.go_back(1);
+    }
+
+    pub fn go_forward(&self) {
+        self.webview.go_forward(1);
+    }
+
+    pub fn resize(&self, width: u32, height: u32) {
+        let size = PhysicalSize::new(width, height);
+        self.context.resize(size);
+        self.webview.resize(size);
+    }
+
+    fn device_point(&self, x: f32, y: f32) -> WebViewPoint {
+        WebViewPoint::Device(DevicePoint::new(x, y))
+    }
+
+    /// Scroll by pixel deltas at the given viewport point.
+    pub fn scroll_by(&self, dx: f64, dy: f64, x: f32, y: f32) {
+        let point = self.device_point(x, y);
+        let delta = WebViewVector::Device(DeviceVector2D::new(dx as f32, dy as f32));
+        self.webview
+            .notify_scroll_event(Scroll::Delta(delta), point);
+        self.webview.paint();
+    }
+
+    /// Click (down + up) with the left button at the given point.
+    pub fn click_at(&self, x: f32, y: f32) {
+        let point = self.device_point(x, y);
+        for action in [MouseButtonAction::Down, MouseButtonAction::Up] {
+            self.webview.notify_input_event(InputEvent::MouseButton(
+                MouseButtonEvent::new(action, MouseButton::Left, point),
+            ));
+        }
+        self.webview.paint();
+    }
+
+    /// Forward a mouse-wheel event (used for trackpad-style scrolling too).
+    pub fn wheel(&self, dx: f64, dy: f64, x: f32, y: f32) {
+        let delta = WheelDelta {
+            x: dx,
+            y: dy,
+            z: 0.0,
+            mode: WheelMode::DeltaPixel,
+        };
+        let point = self.device_point(x, y);
+        self.webview
+            .notify_input_event(InputEvent::Wheel(WheelEvent::new(delta, point)));
+        self.webview.paint();
+    }
+
+    pub fn paint(&self) {
+        self.webview.paint();
+    }
+
+    pub fn read_image(&self) -> Option<image::RgbaImage> {
+        let rect = DeviceIntRect::from_origin_and_size(
+            DeviceIntPoint::new(0, 0),
+            DeviceIntSize::new(self.width as i32, self.height as i32),
+        );
+        self.context.read_to_image(rect)
+    }
+
+    pub fn present(&self) {
+        self.context.present();
+    }
+
+    /// Current favicon pixels, if the page provided any, converted to RGBA.
+    pub fn favicon_image(&self) -> Option<image::RgbaImage> {
+        let icon = self.webview.favicon()?;
+        let (w, h, format, raw) = (icon.width, icon.height, icon.format, icon.data().to_vec());
+        drop(icon);
+        match format {
+            servo::PixelFormat::RGBA8 => image::RgbaImage::from_raw(w, h, raw),
+            servo::PixelFormat::BGRA8 => {
+                let mut px = raw;
+                for chunk in px.chunks_exact_mut(4) {
+                    chunk.swap(0, 2);
+                }
+                image::RgbaImage::from_raw(w, h, px)
+            }
+            servo::PixelFormat::RGB8 => {
+                let mut px = Vec::with_capacity((w * h * 4) as usize);
+                for rgb in raw.chunks_exact(3) {
+                    px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+                }
+                image::RgbaImage::from_raw(w, h, px)
+            }
+            _ => None,
         }
     }
 

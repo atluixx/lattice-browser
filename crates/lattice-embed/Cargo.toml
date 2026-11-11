@@ -11,6 +11,7 @@ image = { version = "0.25", features = ["png"], optional = true }
 dpi = { version = "0.1", optional = true }
 webrender_api = { version = "0.68", optional = true }
 rustls = { version = "0.23", features = ["ring"], optional = true }
+serde_json = { version = "1", optional = true }
 
 [features]
 default = []
@@ -21,6 +22,7 @@ servo-embed = [
     "dep:dpi",
     "dep:webrender_api",
     "dep:rustls",
+    "dep:serde_json",
 ]
 # Servo GStreamer media backend (video/audio). Requires system
 # GStreamer dev packages (nixpkgs gst_all_1: gstreamer, base, good,
