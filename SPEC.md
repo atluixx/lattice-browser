@@ -241,3 +241,12 @@ License: Apache-2.0. Stack: Rust + GPUI 0.2.2 + Servo 0.1.4 LTS + NixOS.
 - Coordinates learned the hard way: tab strip y~185, toolbar y~242,
   address text y~290 at window (320,155); verify with a fresh screenshot
   before clicking, windows move between runs.
+
+## Tab switching: PROVEN in-window (Nov 11, k7/k8)
+- Clicking the inactive "Example Domain" pill swaps the whole view:
+  active marker moves Tab2->Tab1, address bar + status + page pixels all
+  follow (example.com text render). Reverse direction (new tab via +
+  becoming active with its own render) shown in the same session.
+- This also validates the unique-frame-path fix: before it, switched
+  tabs showed stale all-white frames from GPUI's path-keyed image cache;
+  after it, both tabs render their own content.
