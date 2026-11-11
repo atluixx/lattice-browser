@@ -225,6 +225,11 @@ struct RootView {
     next_id: u64,
     addr_focus: FocusHandle,
     history_log: HistoryLog,
+    /// Last time a frame-only update triggered a repaint. Frame events
+    /// stream at up to 10Hz on animated pages; repainting + PNG-decoding
+    /// at that rate makes the window flash. Coalesced to 4Hz; titles,
+    /// URLs and load state still repaint immediately.
+    last_paint_notify: std::time::Instant,
 }
 
 impl RootView {
@@ -378,7 +383,8 @@ impl RootView {
     /// Returns false when polling should stop (currently never: the window
     /// owns the loop).
     fn poll(&mut self, cx: &mut Context<Self>) -> bool {
-        let mut changed = false;
+        let mut meta_changed = false;
+        let mut frame_changed = false;
         // Collect events first (borrow ends before mutation below).
         let mut pending: Vec<(u64, DriverEvent)> = Vec::new();
         for tab in self.tabs.iter() {
@@ -399,13 +405,13 @@ impl RootView {
                             let url = tab.history[tab.index].clone();
                             tab.title = Some(title.clone());
                             tab.status = format!("{url} — {title}");
-                            changed = true;
+                            meta_changed = true;
                         }
                     }
                 }
                 DriverEvent::Load(state) => {
                     if state == "Complete" {
-                        changed = true;
+                        meta_changed = true;
                     }
                 }
                 DriverEvent::Url(url) => {
@@ -421,26 +427,26 @@ impl RootView {
                     if !tab.editing {
                         tab.addr = url;
                     }
-                    changed = true;
+                    meta_changed = true;
                 }
                 DriverEvent::Frame(path) => {
                     if path.as_os_str().is_empty() {
                         continue;
                     }
                     tab.frame = Some(path);
-                    changed = true;
+                    frame_changed = true;
                 }
                 DriverEvent::Favicon(path) => {
                     if path.as_os_str().is_empty() {
                         continue;
                     }
                     tab.favicon = Some(path);
-                    changed = true;
+                    meta_changed = true;
                 }
                 DriverEvent::Bye => {}
             }
         }
-        if changed {
+        if meta_changed {
             // Retitle the newest untitled visit for any tab that got a title.
             for tab in self.tabs.iter() {
                 if let Some(t) = tab.title.clone() {
@@ -449,6 +455,13 @@ impl RootView {
                 }
             }
             self.save_session();
+            cx.notify();
+        } else if frame_changed
+            && self.last_paint_notify.elapsed() >= Duration::from_millis(250)
+        {
+            // Coalesced repaint for streaming frames. Session/history are
+            // untouched by frames, so no disk writes here either.
+            self.last_paint_notify = std::time::Instant::now();
             cx.notify();
         }
         true
@@ -838,6 +851,7 @@ fn main() {
                             next_id: 1,
                             addr_focus: cx.focus_handle(),
                             history_log,
+                            last_paint_notify: std::time::Instant::now(),
                         };
                         let mut restored = false;
                         if let Ok(data) = std::fs::read_to_string(RootView::session_path()) {
