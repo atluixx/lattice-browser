@@ -105,13 +105,20 @@ fn short_title(url: &str, title: &Option<String>) -> String {
             return t;
         }
     }
+    short_host(url)
+}
+
+/// What the address bar shows when not editing: host only, like the
+/// reference (no scheme, path, or query).
+fn short_host(url: &str) -> String {
     let mut s = url
         .trim_start_matches("https://")
         .trim_start_matches("http://");
-    if let Some(end) = s.find('/') {
+    for end in [s.find('/'), s.find('?'), s.find('#')].into_iter().flatten() {
         s = &s[..end];
+        break;
     }
-    s.chars().take(24).collect()
+    s.chars().take(48).collect()
 }
 
 struct Tab {
@@ -381,7 +388,7 @@ impl Render for RootView {
         let addr_text = if tab.editing {
             format!("{}▏", tab.addr)
         } else {
-            tab.history[tab.index].clone()
+            short_host(&tab.history[tab.index])
         };
         let addr_focus = self.addr_focus.clone();
 
@@ -505,10 +512,15 @@ impl Render for RootView {
         }
         let address = div()
             .id("address-bar")
-            .flex_1()
+            .flex()
+            .items_center()
+            .h(px(34.0))
             .px_3()
-            .py_1()
             .rounded_full()
+            .overflow_hidden()
+            .whitespace_nowrap()
+            .text_sm()
+            .bg(rgba(0x00000066))
             .overflow_hidden()
             .bg(rgba(0x00000066))
             .border_1()
